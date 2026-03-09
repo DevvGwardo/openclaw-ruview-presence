@@ -1,25 +1,49 @@
-# openclaw-ruview-presence
+<p align="center">
+  <img src="https://img.shields.io/badge/OpenClaw-Plugin-blueviolet?style=for-the-badge" alt="OpenClaw Plugin">
+  <img src="https://img.shields.io/badge/RuView-WiFi%20Sensing-orange?style=for-the-badge" alt="RuView WiFi Sensing">
+  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License">
+</p>
 
-OpenClaw plugin for presence-aware agent behavior powered by [RuView](https://github.com/ruvnet/RuView) WiFi sensing.
+# OpenClaw RuView Presence
 
-## What it does
+**Presence-aware AI agents powered by WiFi sensing.** No cameras. No wearables. Just physics.
 
-Your OpenClaw agents detect whether you're physically present using WiFi signals — no cameras, no wearables. When you leave, agents queue non-urgent messages. When you return, they greet you with a digest of everything that happened while you were away.
+Your OpenClaw agents detect whether you're physically present using WiFi signals. When you leave, they queue messages. When you return, they greet you with a digest of everything that happened while you were away.
 
-**State machine:** `present` → `away` → `returned` → `present`
+---
 
-| State | Behavior |
-|-------|----------|
-| **Present** | Normal agent operation |
-| **Away** | Queue non-urgent messages, send urgent ones immediately |
-| **Returned** | Deliver digest summary, flush queue, resume normal |
+## How It Works
 
-## Requirements
+```
+                  WiFi Signals
+                      |
+              +-------v--------+
+              |    RuView      |     Detects presence via
+              | WiFi Sensing   |     Channel State Information (CSI)
+              +-------+--------+
+                      |
+              GET /api/v1/pose/current
+                      |
+              +-------v--------+
+              | ruview-presence |     State machine:
+              |   (this plugin) |     present -> away -> returned
+              +-------+--------+
+                      |
+              +-------v--------+
+              |    OpenClaw     |     Agents adapt behavior
+              |    Agents       |     based on your presence
+              +----------------+
+```
 
-- [RuView](https://github.com/ruvnet/RuView) running locally (Docker or native)
-- [OpenClaw](https://openclaw.com) agent runtime
+| State | What Happens |
+|:------|:-------------|
+| **Present** | Agents operate normally |
+| **Away** | Non-urgent messages are queued; urgent ones sent immediately |
+| **Returned** | Agents deliver a welcome-back digest, then resume normal operation |
 
-## Quick start
+---
+
+## Quick Start
 
 ### 1. Start RuView
 
@@ -27,22 +51,25 @@ Your OpenClaw agents detect whether you're physically present using WiFi signals
 docker run -d -p 3000:3000 --name ruview ruvnet/wifi-densepose:latest
 ```
 
-### 2. Install the plugin
+> Works in simulation mode out of the box — no WiFi hardware needed for testing.
+
+### 2. Install the Plugin
 
 ```bash
-openclaw plugins install /path/to/openclaw-ruview-presence
+# From local clone
+openclaw plugins install ./openclaw-ruview-presence
+
+# Or link for development
+openclaw plugins install -l ./openclaw-ruview-presence
 ```
 
-Or link for development:
+### 3. Configure
 
-```bash
-openclaw plugins install -l /path/to/openclaw-ruview-presence
-```
+Add to your `openclaw.json`:
 
-### 3. Enable in openclaw.json
-
-```json
+```jsonc
 {
+  // Plugin configuration (runtime logic)
   "plugins": {
     "entries": {
       "ruview-presence": {
@@ -55,22 +82,9 @@ openclaw plugins install -l /path/to/openclaw-ruview-presence
         }
       }
     }
-  }
-}
-```
+  },
 
-### 4. Install the skill
-
-Copy the bundled skill to your OpenClaw skills directory:
-
-```bash
-cp -r skills/ruview-presence ~/.openclaw/skills/ruview-presence
-```
-
-Add the skill entry:
-
-```json
-{
+  // Skill configuration (agent instructions)
   "skills": {
     "entries": {
       "ruview-presence": {
@@ -84,55 +98,112 @@ Add the skill entry:
 }
 ```
 
-## Configuration
+### 4. Install the Bundled Skill
+
+```bash
+cp -r skills/ruview-presence ~/.openclaw/skills/ruview-presence
+```
+
+That's it. Your agents will start checking presence on their next heartbeat.
+
+---
+
+## Configuration Reference
 
 | Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `ruviewUrl` | string | `http://localhost:3000` | RuView API base URL |
-| `pollIntervalMs` | number | `10000` | Poll interval in milliseconds |
-| `confidenceThreshold` | number | `0.3` | Minimum confidence to count as present |
-| `debounceCount` | number | `2` | Consecutive empty checks before marking away |
-| `enableDigest` | boolean | `true` | Show digest when user returns |
-| `enableZoneAwareness` | boolean | `false` | Track which zone the user is in |
+|:-------|:-----|:--------|:------------|
+| `ruviewUrl` | `string` | `http://localhost:3000` | RuView API base URL |
+| `pollIntervalMs` | `number` | `10000` | How often to poll RuView (ms) |
+| `confidenceThreshold` | `number` | `0.3` | Minimum detection confidence to count as "present" |
+| `debounceCount` | `number` | `2` | Consecutive empty readings before marking as "away" |
+| `enableDigest` | `boolean` | `true` | Show a summary digest when the user returns |
+| `enableZoneAwareness` | `boolean` | `false` | Track which room/zone the user is in |
 
-## How it works
+All options can also be set via environment variables:
 
-The plugin hooks into OpenClaw's `before_prompt_build` lifecycle event. On each agent heartbeat:
+| Environment Variable | Maps To |
+|:---------------------|:--------|
+| `RUVIEW_API_URL` | `ruviewUrl` |
+| `RUVIEW_API_KEY` | Auth token (if RuView auth is enabled) |
 
-1. **Polls** `GET /api/v1/pose/current` on RuView
-2. **Evaluates** whether any detected person exceeds the confidence threshold
-3. **Transitions** the state machine with debounce (avoids false "away" triggers)
-4. **On return** — prepends a digest to the agent's context with queued events
+---
 
-The bundled skill (`skills/ruview-presence/`) provides standing orders that agents follow during heartbeat cycles, giving them explicit instructions for presence-aware behavior.
+## Architecture
 
-## Gateway RPC methods
+### Plugin Layer (`index.ts`)
 
-The plugin registers two RPC methods on the OpenClaw gateway:
+Hooks into OpenClaw's `before_prompt_build` lifecycle event to poll RuView and manage state transitions. When the user returns after being away, the plugin prepends a digest summary to the agent's context.
 
-| Method | Description |
-|--------|-------------|
-| `ruview.presence` | Returns current presence state, zone, away duration, queued event count |
-| `ruview.queueEvent` | Queue an event to deliver when user returns |
+### Skill Layer (`skills/ruview-presence/`)
 
-## RuView endpoints used
+Provides standing orders that agents follow during heartbeat cycles. The skill gives agents explicit instructions for presence-aware behavior — checking the API, interpreting results, and acting on state changes.
+
+### Gateway RPC Methods
+
+The plugin exposes two methods on the OpenClaw gateway for programmatic access:
+
+```
+ruview.presence       Returns { state, zone, awaySince, queuedEvents }
+ruview.queueEvent     Queue an event for the return digest
+```
+
+### RuView Endpoints Used
 
 | Endpoint | Purpose |
-|----------|---------|
-| `GET /api/v1/pose/current` | Detect persons and confidence |
-| `GET /api/v1/pose/zones/summary` | Zone-level occupancy (optional) |
+|:---------|:--------|
+| `GET /api/v1/pose/current` | Detect persons and confidence scores |
+| `GET /api/v1/pose/zones/summary` | Zone-level occupancy (when zone awareness is enabled) |
 | `GET /health/live` | Verify RuView is reachable |
 
-## Hardware
+---
 
-RuView works in simulation mode out of the box (no hardware needed). For real presence detection:
+## Hardware Options
 
-| Option | Cost | Accuracy |
-|--------|------|----------|
-| Any WiFi laptop | $0 | RSSI-only (coarse) |
-| ESP32-S3 mesh (3-6 nodes) | ~$54 | Full CSI (precise) |
-| Research NIC (Intel 5300) | ~$50-100 | Full CSI with MIMO |
+RuView runs in simulation mode by default. For real-world presence detection:
+
+| Option | Hardware | Cost | Capability |
+|:-------|:---------|:-----|:-----------|
+| **No hardware** | Any computer | $0 | Simulation mode (synthetic data) |
+| **Basic** | Any WiFi laptop | $0 | RSSI-only presence (coarse) |
+| **Recommended** | 3-6x ESP32-S3 + router | ~$54 | Full CSI: pose, breathing, heartbeat, motion |
+| **Research** | Intel 5300 / Atheros AR9580 | ~$50-100 | Full CSI with 3x3 MIMO |
+
+---
+
+## Fault Tolerance
+
+- If RuView is unreachable, the plugin **keeps the last known state** and retries on the next heartbeat
+- The debounce mechanism prevents false "away" triggers from momentary signal drops
+- Urgent messages are always delivered immediately, regardless of presence state
+
+---
+
+## Project Structure
+
+```
+openclaw-ruview-presence/
+  index.ts                 Plugin entry point (state machine, polling, digest)
+  openclaw.plugin.json     Plugin manifest and config schema
+  package.json             Package definition
+  skills/
+    ruview-presence/
+      SKILL.md             Agent standing orders
+      HEARTBEAT.md         Heartbeat trigger
+```
+
+---
+
+## Requirements
+
+- [OpenClaw](https://openclaw.com) agent runtime (`>=2026.3.1`)
+- [RuView](https://github.com/ruvnet/RuView) sensing server (Docker or native)
 
 ## License
 
 MIT
+
+---
+
+<p align="center">
+  <sub>Built with <a href="https://github.com/ruvnet/RuView">RuView</a> WiFi sensing and <a href="https://openclaw.com">OpenClaw</a> agent runtime.</sub>
+</p>
