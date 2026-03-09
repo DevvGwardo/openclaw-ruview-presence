@@ -51,12 +51,20 @@ Your OpenClaw agents detect whether you're physically present using WiFi signals
 docker run -d -p 3000:3000 --name ruview ruvnet/wifi-densepose:latest
 ```
 
-> Works in simulation mode out of the box — no WiFi hardware needed for testing.
+Verify it's running:
+
+```bash
+curl -s http://localhost:3000/health/live
+# {"status":"alive","uptime":4}
+```
+
+> Works in simulation mode out of the box — no WiFi hardware needed for testing. The `source` field in API responses will show `"simulate"` (synthetic data) vs `"csi"` (real hardware).
 
 ### 2. Install the Plugin
 
 ```bash
 # From local clone
+git clone https://github.com/DevvGwardo/openclaw-ruview-presence.git
 openclaw plugins install ./openclaw-ruview-presence
 
 # Or link for development
@@ -104,7 +112,12 @@ Add to your `openclaw.json`:
 cp -r skills/ruview-presence ~/.openclaw/skills/ruview-presence
 ```
 
-That's it. Your agents will start checking presence on their next heartbeat.
+That's it. Your agents will start checking presence on their next heartbeat. You'll see this in the logs confirming the skill was picked up:
+
+```
+config change detected; evaluating reload (skills)
+config change applied (dynamic reads: skills)
+```
 
 ---
 
@@ -128,38 +141,125 @@ All options can also be set via environment variables:
 
 ---
 
+## RuView API Data
+
+These are the actual responses from RuView that the plugin works with.
+
+### Pose Detection (`GET /api/v1/pose/current`)
+
+This is the primary endpoint used for presence detection.
+
+```json
+{
+  "timestamp": 1773088911.824,
+  "source": "simulate",
+  "total_persons": 1,
+  "persons": [
+    {
+      "id": 1,
+      "confidence": 0.78,
+      "zone": "zone_1",
+      "bbox": { "x": 270.4, "y": 133.2, "width": 136.6, "height": 235.1 },
+      "keypoints": [
+        { "name": "nose", "confidence": 0.59, "x": 336.5, "y": 151.8, "z": -0.22 },
+        { "name": "left_eye", "confidence": 0.61, "x": 326.1, "y": 146.0, "z": -0.22 },
+        { "name": "right_eye", "confidence": 0.66, "x": 346.1, "y": 143.2, "z": -0.22 },
+        { "name": "left_shoulder", "confidence": 0.77, "x": 311.3, "y": 185.6, "z": -0.22 },
+        { "name": "right_shoulder", "confidence": 0.74, "x": 360.6, "y": 186.9, "z": -0.22 }
+      ]
+    }
+  ]
+}
+```
+
+Each person includes 17 DensePose-compatible keypoints: nose, left/right eye, left/right ear, left/right shoulder, left/right elbow, left/right wrist, left/right hip, left/right knee, left/right ankle.
+
+### Zone Summary (`GET /api/v1/pose/zones/summary`)
+
+```json
+{
+  "zones": {
+    "zone_1": { "person_count": 1, "status": "monitored" },
+    "zone_2": { "person_count": 0, "status": "clear" },
+    "zone_3": { "person_count": 0, "status": "clear" },
+    "zone_4": { "person_count": 0, "status": "clear" }
+  }
+}
+```
+
+### Vital Signs (`GET /api/v1/vital-signs`)
+
+```json
+{
+  "vital_signs": {
+    "breathing_rate_bpm": 9.4,
+    "breathing_confidence": 0.83,
+    "heart_rate_bpm": 44.4,
+    "heartbeat_confidence": 0.67,
+    "signal_quality": 0.52
+  },
+  "source": "simulate",
+  "tick": 19612
+}
+```
+
+### Full Sensing Data (`GET /api/v1/sensing/latest`)
+
+Returns everything above plus raw signal features (mean RSSI, spectral power, motion/breathing band power), per-sensor subcarrier amplitudes, RF tomography voxel grid, and classification:
+
+```json
+{
+  "classification": {
+    "presence": true,
+    "motion_level": "present_still",
+    "confidence": 0.78
+  },
+  "features": {
+    "mean_rssi": -37.0,
+    "variance": 15.1,
+    "spectral_power": 249.0,
+    "dominant_freq_hz": 1.85,
+    "breathing_band_power": 16.4,
+    "motion_band_power": 13.7,
+    "change_points": 8
+  }
+}
+```
+
+### Health Check (`GET /health/live`)
+
+```json
+{ "status": "alive", "uptime": 1961 }
+```
+
+---
+
 ## Architecture
 
 ### Plugin Layer (`index.ts`)
 
 Hooks into OpenClaw's `before_prompt_build` lifecycle event to poll RuView and manage state transitions. When the user returns after being away, the plugin prepends a digest summary to the agent's context.
 
+Types match the actual RuView API response format — `RuViewPoseResponse`, `RuViewZoneSummary`, `RuViewVitalSigns`, and `RuViewSensingLatest` are all typed to the real payloads.
+
 ### Skill Layer (`skills/ruview-presence/`)
 
-Provides standing orders that agents follow during heartbeat cycles. The skill gives agents explicit instructions for presence-aware behavior — checking the API, interpreting results, and acting on state changes.
+Provides standing orders that agents follow during heartbeat cycles. The skill gives agents explicit instructions for presence-aware behavior — checking the API, interpreting results, and acting on state changes. Includes the actual JSON response format so agents can parse responses correctly.
 
 ### Gateway RPC Methods
 
 The plugin exposes two methods on the OpenClaw gateway for programmatic access:
 
-```
-ruview.presence       Returns { state, zone, awaySince, queuedEvents }
-ruview.queueEvent     Queue an event for the return digest
-```
-
-### RuView Endpoints Used
-
-| Endpoint | Purpose |
-|:---------|:--------|
-| `GET /api/v1/pose/current` | Detect persons and confidence scores |
-| `GET /api/v1/pose/zones/summary` | Zone-level occupancy (when zone awareness is enabled) |
-| `GET /health/live` | Verify RuView is reachable |
+| Method | Returns |
+|:-------|:--------|
+| `ruview.presence` | `{ state, zone, awaySince, queuedEvents, detectedPersons, source }` |
+| `ruview.queueEvent` | `{ queued: true, total: <count> }` |
 
 ---
 
 ## Hardware Options
 
-RuView runs in simulation mode by default. For real-world presence detection:
+RuView runs in simulation mode by default (`source: "simulate"` in responses). For real-world presence detection (`source: "csi"`):
 
 | Option | Hardware | Cost | Capability |
 |:-------|:---------|:-----|:-----------|
@@ -173,8 +273,21 @@ RuView runs in simulation mode by default. For real-world presence detection:
 ## Fault Tolerance
 
 - If RuView is unreachable, the plugin **keeps the last known state** and retries on the next heartbeat
-- The debounce mechanism prevents false "away" triggers from momentary signal drops
+- The debounce mechanism prevents false "away" triggers from momentary signal drops (requires 2 consecutive empty readings by default)
 - Urgent messages are always delivered immediately, regardless of presence state
+- The `source` field in RuView responses distinguishes simulation from real hardware data
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|:--------|:---------|
+| Agent says "rate limit reached" | Your model provider is rate-limited. Switch to a different model with `openclaw models set <model>` |
+| Agent tries to use `read()` tools | The Chat Completions API doesn't support tool calls. Send the agent the data directly or use the Responses API |
+| Port 3000 is already in use | Map to a different port: `docker run -d -p 3002:3000 --name ruview ruvnet/wifi-densepose:latest` and update `ruviewUrl` in config |
+| Skill not detected | Check `openclaw logs` for `config change detected; evaluating reload (skills)` — if missing, restart the gateway |
+| Always shows "present" | In simulation mode, RuView always returns a synthetic person. Use real CSI hardware for actual presence/absence detection |
 
 ---
 
@@ -187,7 +300,7 @@ openclaw-ruview-presence/
   package.json             Package definition
   skills/
     ruview-presence/
-      SKILL.md             Agent standing orders
+      SKILL.md             Agent standing orders with API response formats
       HEARTBEAT.md         Heartbeat trigger
 ```
 

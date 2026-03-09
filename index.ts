@@ -1,25 +1,90 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
-// --- Types ---
+// --- Types (matching actual RuView API responses) ---
 
 type PresenceState = "present" | "away" | "returned";
+
+type RuViewKeypoint = {
+  name: string;
+  confidence: number;
+  x: number;
+  y: number;
+  z: number;
+};
+
+type RuViewBbox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 
 type RuViewPerson = {
   id: number;
   confidence: number;
   zone?: string;
-  bbox?: Record<string, number>;
+  bbox?: RuViewBbox;
+  keypoints?: RuViewKeypoint[];
 };
 
 type RuViewPoseResponse = {
   timestamp: number;
-  source: string;
+  source: string; // "simulate" | "csi"
   total_persons: number;
   persons: RuViewPerson[];
 };
 
+type RuViewZoneInfo = {
+  person_count: number;
+  status: string; // "monitored" | "clear"
+};
+
 type RuViewZoneSummary = {
-  zones: Record<string, { person_count: number; status: string }>;
+  zones: Record<string, RuViewZoneInfo>;
+};
+
+type RuViewVitalSigns = {
+  vital_signs: {
+    breathing_rate_bpm: number;
+    breathing_confidence: number;
+    heart_rate_bpm: number;
+    heartbeat_confidence: number;
+    signal_quality: number;
+  };
+  source: string;
+  tick: number;
+  buffer_status: {
+    breathing_samples: number;
+    breathing_capacity: number;
+    heartbeat_samples: number;
+    heartbeat_capacity: number;
+  };
+};
+
+type RuViewSensingClassification = {
+  presence: boolean;
+  motion_level: string; // "present_still" | "present_moving" | "absent"
+  confidence: number;
+};
+
+type RuViewSensingLatest = {
+  timestamp: number;
+  source: string;
+  type: string;
+  tick: number;
+  estimated_persons: number;
+  classification: RuViewSensingClassification;
+  persons: RuViewPerson[];
+  vital_signs: RuViewVitalSigns["vital_signs"];
+  features: {
+    mean_rssi: number;
+    variance: number;
+    spectral_power: number;
+    dominant_freq_hz: number;
+    breathing_band_power: number;
+    motion_band_power: number;
+    change_points: number;
+  };
 };
 
 type QueuedEvent = {
@@ -46,6 +111,8 @@ let previousState: PresenceState = "present";
 let awaySince: number | null = null;
 let emptyCheckCount = 0;
 let currentZone: string | null = null;
+let lastDetectedPersons = 0;
+let lastSource: string | null = null;
 let eventQueue: QueuedEvent[] = [];
 let lastPollTime = 0;
 
@@ -81,17 +148,20 @@ async function checkPresence(config: PluginConfig): Promise<{
   detected: boolean;
   zone: string | null;
   persons: number;
+  source: string | null;
+  topConfidence: number | null;
 }> {
   const data = await fetchJson<RuViewPoseResponse>(`${config.ruviewUrl}/api/v1/pose/current`);
   if (!data) {
-    return { detected: false, zone: null, persons: 0 };
+    return { detected: false, zone: null, persons: 0, source: null, topConfidence: null };
   }
 
   const validPersons = data.persons.filter((p) => p.confidence >= config.confidenceThreshold);
   const detected = validPersons.length > 0;
   const zone = detected ? (validPersons[0]?.zone ?? null) : null;
+  const topConfidence = detected ? Math.max(...validPersons.map((p) => p.confidence)) : null;
 
-  return { detected, zone, persons: validPersons.length };
+  return { detected, zone, persons: validPersons.length, source: data.source, topConfidence };
 }
 
 async function checkZones(config: PluginConfig): Promise<RuViewZoneSummary | null> {
@@ -161,12 +231,16 @@ export function getPresenceState(): {
   zone: string | null;
   awaySince: number | null;
   queuedEvents: number;
+  detectedPersons: number;
+  source: string | null;
 } {
   return {
     state: currentState,
     zone: currentZone,
     awaySince,
     queuedEvents: eventQueue.length,
+    detectedPersons: lastDetectedPersons,
+    source: lastSource,
   };
 }
 
@@ -204,25 +278,33 @@ const ruviewPresencePlugin = {
       lastPollTime = now;
 
       const presence = await checkPresence(config);
+
+      // Track metadata for RPC queries
+      lastDetectedPersons = presence.persons;
+      lastSource = presence.source;
+
       previousState = currentState;
 
       if (!presence.detected) {
-        // No one detected
+        // No one detected — RuView returned empty persons or all below threshold
         emptyCheckCount++;
         if (emptyCheckCount >= config.debounceCount && currentState !== "away") {
           currentState = "away";
           awaySince = Date.now();
+          currentZone = null;
           api.logger.info?.(`ruview-presence: user away since ${new Date(awaySince).toISOString()}`);
         }
       } else {
-        // Person detected
+        // Person detected above confidence threshold
         emptyCheckCount = 0;
         currentZone = presence.zone;
 
         if (currentState === "away") {
           currentState = "returned";
           api.logger.info?.(
-            `ruview-presence: user returned (was away for ${formatDuration(Date.now() - (awaySince ?? now))})`,
+            `ruview-presence: user returned` +
+              ` (away for ${formatDuration(Date.now() - (awaySince ?? now))},` +
+              ` confidence=${presence.topConfidence?.toFixed(2)}, zone=${presence.zone})`,
           );
         } else {
           currentState = "present";
