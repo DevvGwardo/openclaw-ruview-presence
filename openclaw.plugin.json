@@ -1,0 +1,62 @@
+{
+  "id": "ruview-presence",
+  "name": "RuView Presence",
+  "description": "Presence-aware agent behavior powered by RuView WiFi sensing. Detects user presence via WiFi CSI and adapts agent behavior — queuing messages when away, delivering digests on return.",
+  "version": "0.1.0",
+  "kind": "integration",
+  "skills": ["ruview-presence"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "ruviewUrl": {
+        "type": "string"
+      },
+      "pollIntervalMs": {
+        "type": "number",
+        "minimum": 1000
+      },
+      "confidenceThreshold": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "debounceCount": {
+        "type": "number",
+        "minimum": 1
+      },
+      "enableDigest": {
+        "type": "boolean"
+      },
+      "enableZoneAwareness": {
+        "type": "boolean"
+      }
+    }
+  },
+  "uiHints": {
+    "ruviewUrl": {
+      "label": "RuView URL",
+      "help": "Base URL of the RuView sensing server (default: http://localhost:3000)."
+    },
+    "pollIntervalMs": {
+      "label": "Poll Interval (ms)",
+      "help": "How often to check presence on heartbeat, in milliseconds (default: 10000)."
+    },
+    "confidenceThreshold": {
+      "label": "Confidence Threshold",
+      "help": "Minimum detection confidence to count as present (default: 0.3)."
+    },
+    "debounceCount": {
+      "label": "Debounce Count",
+      "help": "Consecutive empty checks before marking user as away (default: 2)."
+    },
+    "enableDigest": {
+      "label": "Enable Digest",
+      "help": "Deliver a summary when the user returns after being away (default: true)."
+    },
+    "enableZoneAwareness": {
+      "label": "Enable Zone Awareness",
+      "help": "Track which zone the user is in for smarter behavior (default: false)."
+    }
+  }
+}
