@@ -177,6 +177,58 @@ hermes/
 | **Basic** | Any WiFi laptop | $0 | RSSI-only presence |
 | **Recommended** | 3-6x ESP32-S3 + router | ~$54 | Full CSI: pose, breathing, heartbeat |
 | **Research** | Intel 5300 / Atheros AR9580 | ~$50-100 | Full CSI with 3x3 MIMO |
+| **macOS** | MacBook (native) | $0 | RSSI-only, ~0.3-0.5 Hz, presence + motion detection |
+
+---
+
+## macOS Setup
+
+For macOS users with MacBooks, an RSSI-based daemon provides presence detection using native CoreWLAN (no extra hardware).
+
+### Requirements
+
+- macOS with WiFi adapter
+- Location Services enabled (required for BSSID access)
+- Xcode command line tools
+
+### Setup Steps
+
+**a. Build the Swift scanner:**
+
+```bash
+cd tools/macos-wifi-scan && ./build.sh
+```
+
+**b. Start the RSSI daemon:**
+
+```bash
+./macos/start_rssi_daemon.sh
+```
+
+The daemon polls RSSI every 2-3s, computes variance, and serves the RuView API format on `http://localhost:3002`.
+
+**c. Configure Hermes to use the RSSI endpoint:**
+
+Edit `~/.hermes/memories/.hermes-ruview-env`:
+
+```bash
+RUVIEW_API_URL=http://localhost:3002
+```
+
+**d. Verify installation:**
+
+```bash
+curl -s http://localhost:3002/api/v1/pose/current | python3 -c "import sys,json; d=json.load(sys.stdin); print('source:', d['source'], 'persons:', d['total_persons'])"
+```
+
+Expected output: `source: macos-rssi persons: 0` (1 if you're moving)
+
+### Limitations
+
+- RSSI-only: no pose estimation or person counting
+- Update rate: ~0.3-0.5 Hz (2-3 second polling)
+- Requires Location Services to be enabled for BSSID scanning
+- Coarse presence detection based on RSSI variance
 
 ---
 

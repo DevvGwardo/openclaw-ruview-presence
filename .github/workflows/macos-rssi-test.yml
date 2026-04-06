@@ -1,0 +1,59 @@
+name: macOS RSSI Test
+
+on:
+  push:
+    paths:
+      - 'tools/macos-wifi-scan/**'
+      - 'macos/**'
+      - '.github/workflows/macos-rssi-test.yml'
+  pull_request:
+    paths:
+      - 'tools/macos-wifi-scan/**'
+      - 'macos/**'
+      - '.github/workflows/macos-rssi-test.yml'
+
+jobs:
+  test:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Swift binary
+        run: |
+          cd tools/macos-wifi-scan
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Verify Swift binary exists
+        run: |
+          cd tools/macos-wifi-scan
+          ls -la macos-wifi-scan
+          file macos-wifi-scan
+
+      - name: Probe CoreWLAN access
+        run: |
+          cd tools/macos-wifi-scan
+          ./macos-wifi-scan --probe
+
+      - name: Test RSSI adapter with mock data
+        run: |
+          cd macos
+          python3 -c "
+import sys
+sys.path.insert(0, '.')
+from rssi_adapter import RSSIAdapter
+
+adapter = RSSIAdapter()
+mock_reading = {
+    'ssids': ['TestNetwork'],
+    'rssi_values': [-45, -47, -46, -44, -48],
+    'bssid': 'aa:bb:cc:dd:ee:ff',
+    'ssid': 'TestNetwork'
+}
+result = adapter.process_reading(mock_reading)
+print(f'Mock RSSI detection: presence={result[\"presence_detected\"]}, variance={result[\"variance\"]:.4f}')
+assert 'presence_detected' in result
+print('RSSI adapter test passed')
+"
