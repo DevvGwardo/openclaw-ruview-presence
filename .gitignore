@@ -1,8 +1,0 @@
-node_modules/
-dist/
-*.js
-*.js.map
-*.d.ts
-!openclaw.plugin.json
-.env
-.DS_Store

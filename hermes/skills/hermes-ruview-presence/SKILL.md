@@ -60,7 +60,7 @@ Ready when you are.
 
 ## Configuration
 
-Set env vars or create `~/.hermes/memories/.ruview-env` with:
+Set env vars or create `~/.hermes/memories/.hermes-ruview-env` with:
 
 ```
 RUVIEW_API_URL=http://localhost:3000

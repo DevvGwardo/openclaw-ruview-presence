@@ -1,5 +1,9 @@
 # Hermes RuView Presence
 
+![Hermes](https://img.shields.io/badge/Hermes-00C9A7?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI0NSIgZmlsbD0iIzAwQzlBNyIvPjwvc3ZnPg==)
+![RuView](https://img.shields.io/badge/RuView-FF6B35?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI0NSIgZmlsbD0iI0ZGNkIzNSIvPjwvc3ZnPg==)
+![MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)
+
 **Presence-aware AI agent powered by WiFi sensing.** No cameras. No wearables. Just physics.
 
 A Hermes adaptation of the [OpenClaw ruview-presence](https://github.com/MisterGuy420/openclaw-ruview-presence) plugin. Uses RuView Channel State Information (CSI) WiFi sensing to detect whether you're physically present, queues messages while you're away, and greets you with a digest when you return.
@@ -14,13 +18,15 @@ WiFi Signals
 GET /api/v1/pose/current
     |
 +---v---+       +--------+       +--------+
-| RuView|--CSI--> Hermes |State: | present |
-| CSI   |       | State  |       | away   |
-+--------+       +---+----+       | returned|
-                    |             +--------+
-              ~/.hermes/memories/
-              hermes-ruview-presence-state.json
+| RuView|--CSI->| Hermes |State: | present |
+| CSI   |       | State  |       | away    |
++--------+      +---+----+       | returned|
+                     |           +--------+
+               ~/.hermes/memories/
+               hermes-ruview-presence-state.json
 ```
+
+**State machine:**
 
 | State | What Happens |
 |:------|:-------------|
@@ -45,7 +51,7 @@ curl -s http://localhost:3000/health/live
 # {"status":"alive","uptime":4}
 ```
 
-Works in simulation mode out of the box. `source: "simulate"` = synthetic, `source: "csi"` = real hardware.
+Works in simulation mode out of the box. `source: "simulate"` = synthetic data, `source: "csi"` = real hardware.
 
 ### 2. Install the Scripts
 
@@ -101,6 +107,18 @@ The cron job auto-registers in `~/.hermes/cron/jobs.json` (runs every 30 seconds
 }
 ```
 
+| Field | Type | Description |
+|:------|:-----|:------------|
+| `current_state` | string | Current state: `present`, `away`, or `returned` |
+| `previous_state` | string | Previous state before last transition |
+| `away_since` | float\|null | Unix timestamp when user went away |
+| `empty_check_count` | int | Consecutive empty polls (used for debounce) |
+| `last_poll` | float | Unix timestamp of last poll |
+| `last_source` | string\|null | Data source: `simulate`, `csi`, etc. |
+| `detected_persons` | int | Number of persons detected |
+| `event_queue` | array | Queued events accumulated while away |
+| `pending_digest` | bool | Whether digest is pending delivery |
+
 ---
 
 ## Configuration Reference
@@ -110,7 +128,7 @@ The cron job auto-registers in `~/.hermes/cron/jobs.json` (runs every 30 seconds
 | `RUVIEW_API_URL` | `http://localhost:3000` | RuView API base URL |
 | `RUVIEW_API_KEY` | _(none)_ | Bearer token if auth enabled |
 | `RUVIEW_CONFIDENCE_THRESHOLD` | `0.3` | Min confidence to count as present |
-| `RUVIEW_DEBOUNCE_COUNT` | `2` | Empty checks before marking away |
+| `RUVIEW_DEBOUNCE_COUNT` | `2` | Empty polls before marking away |
 
 ---
 
@@ -141,12 +159,12 @@ Ready when you are.
 
 ```
 hermes/
-  README.md                    This file
-  scripts/
-    ruview_state.py            State machine + API polling (pure stdlib)
-    hermes-ruview-presence-cron.sh   Cron wrapper + env loading
-  skills/hermes-ruview-presence/
-    SKILL.md                   Agent standing orders
+├── README.md                              This file
+├── scripts/
+│   ├── ruview_state.py                    State machine + API polling (pure stdlib)
+│   └── hermes-ruview-presence-cron.sh     Cron wrapper + env loading
+└── skills/hermes-ruview-presence/
+    └── SKILL.md                           Agent standing orders
 ```
 
 ---
