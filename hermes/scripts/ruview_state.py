@@ -18,7 +18,7 @@ CONFIDENCE_THRESHOLD = float(os.environ.get("RUVIEW_CONFIDENCE_THRESHOLD", "0.3"
 DEBOUNCE_COUNT = int(os.environ.get("RUVIEW_DEBOUNCE_COUNT", "2"))
 
 # State file path
-STATE_FILE = os.path.expanduser("~/.hermes/memories/ruview-presence-state.json")
+STATE_FILE = os.path.expanduser("~/.hermes/memories/hermes-ruview-presence-state.json")
 
 # Ensure directory exists
 os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
@@ -26,7 +26,7 @@ os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
 
 def log(message: str) -> None:
     """Print log message with prefix."""
-    print(f"[ruview-presence] {message}")
+    print(f"[hermes-ruview-presence] {message}")
 
 
 def load_state(path: str) -> Dict[str, Any]:

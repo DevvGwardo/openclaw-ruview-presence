@@ -7,8 +7,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_SCRIPT="${SCRIPT_DIR}/ruview_state.py"
 LOG_DIR="${HOME}/.hermes/cron"
-LOG_FILE="${LOG_DIR}/ruview-presence.log"
-ENV_FILE="${HOME}/.hermes/memories/.ruview-env"
+LOG_FILE="${LOG_DIR}/hermes-ruview-presence.log"
+ENV_FILE="${HOME}/.hermes/memories/.hermes-ruview-env"
 
 # Ensure log directory exists
 mkdir -p "${LOG_DIR}"

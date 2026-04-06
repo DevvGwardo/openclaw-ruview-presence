@@ -311,6 +311,12 @@ openclaw-ruview-presence/
 - [OpenClaw](https://openclaw.com) agent runtime (`>=2026.3.1`)
 - [RuView](https://github.com/ruvnet/RuView) sensing server (Docker or native)
 
+## Hermes Port
+
+A Hermes-native implementation lives in the `hermes/` subdirectory. It uses a pure-stdlib Python state machine, a shell cron wrapper, and a skill for agent standing orders. State persists to `~/.hermes/memories/hermes-ruview-presence-state.json`. See `hermes/README.md` for full setup instructions.
+
+---
+
 ## License
 
 MIT

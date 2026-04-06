@@ -2,7 +2,7 @@
 
 **Presence-aware AI agent powered by WiFi sensing.** No cameras. No wearables. Just physics.
 
-This is the Hermes adaptation of the [OpenClaw ruview-presence](https://github.com/MisterGuy420/openclaw-ruview-presence) plugin. It uses RuView's Channel State Information (CSI) WiFi sensing to detect whether you're physically present, queues messages while you're away, and greets you with a digest when you return.
+A Hermes adaptation of the [OpenClaw ruview-presence](https://github.com/MisterGuy420/openclaw-ruview-presence) plugin. Uses RuView Channel State Information (CSI) WiFi sensing to detect whether you're physically present, queues messages while you're away, and greets you with a digest when you return.
 
 ---
 
@@ -19,7 +19,7 @@ GET /api/v1/pose/current
 +--------+       +---+----+       | returned|
                     |             +--------+
               ~/.hermes/memories/
-              ruview-presence-state.json
+              hermes-ruview-presence-state.json
 ```
 
 | State | What Happens |
@@ -38,33 +38,33 @@ GET /api/v1/pose/current
 docker run -d -p 3000:3000 --name ruview ruvnet/wifi-densepose:latest
 ```
 
-Verify it's running:
+Verify:
 
 ```bash
 curl -s http://localhost:3000/health/live
 # {"status":"alive","uptime":4}
 ```
 
-Works in simulation mode out of the box. `source` field shows `"simulate"` (synthetic) vs `"csi"` (real hardware).
+Works in simulation mode out of the box. `source: "simulate"` = synthetic, `source: "csi"` = real hardware.
 
 ### 2. Install the Scripts
 
 ```bash
 # State machine
-cp ~/hermes-evo/scripts/ruview_state.py ~/.hermes/scripts/
+cp hermes/scripts/ruview_state.py ~/.hermes/scripts/
 chmod +x ~/.hermes/scripts/ruview_state.py
 
 # Cron wrapper
-cp ~/hermes-evo/scripts/ruview-presence-cron.sh ~/.hermes/scripts/
-chmod +x ~/.hermes/scripts/ruview-presence-cron.sh
+cp hermes/scripts/hermes-ruview-presence-cron.sh ~/.hermes/scripts/
+chmod +x ~/.hermes/scripts/hermes-ruview-presence-cron.sh
 
 # Skill (agent instructions)
-cp -r ~/hermes-evo/scripts/skills/ruview-presence ~/.hermes/skills/
+cp -r hermes/skills/hermes-ruview-presence ~/.hermes/skills/
 ```
 
 ### 3. Configure
 
-Create `~/.hermes/memories/.ruview-env`:
+Create `~/.hermes/memories/.hermes-ruview-env`:
 
 ```bash
 RUVIEW_API_URL=http://localhost:3000
@@ -75,19 +75,17 @@ RUVIEW_DEBOUNCE_COUNT=2
 
 ### 4. Cron Job
 
-The cron job is auto-registered via `~/.hermes/cron/jobs.json`. It runs every 30 seconds and updates presence state in `~/.hermes/memories/ruview-presence-state.json`.
-
-To manually trigger the polling script:
+The cron job auto-registers in `~/.hermes/cron/jobs.json` (runs every 30 seconds). Manually trigger:
 
 ```bash
-~/.hermes/scripts/ruview-presence-cron.sh
+~/.hermes/scripts/hermes-ruview-presence-cron.sh
 ```
 
 ---
 
 ## State File
 
-`~/.hermes/memories/ruview-presence-state.json`
+`~/.hermes/memories/hermes-ruview-presence-state.json`
 
 ```json
 {
@@ -118,9 +116,9 @@ To manually trigger the polling script:
 
 ## Agent Skill
 
-When the `ruview-presence` skill is active, Hermes agents follow these standing orders on every conversation start:
+When the `hermes-ruview-presence` skill is active, Hermes follows these standing orders on every conversation start:
 
-1. Read `~/.hermes/memories/ruview-presence-state.json`
+1. Read `~/.hermes/memories/hermes-ruview-presence-state.json`
 2. If `current_state` is `"returned"` and `pending_digest` is `true`: deliver digest, clear digest flag, set state to `"present"`
 3. If `current_state` is `"away"`: queue non-urgent messages to the `event_queue` list in the state file
 4. If RuView is unreachable: use last known state, do not change it
@@ -142,39 +140,13 @@ Ready when you are.
 ## Project Structure
 
 ```
-hermes-evo/scripts/
-  ruview_state.py              State machine + API polling (pure stdlib)
-  ruview-presence-cron.sh      Cron wrapper + env loading
-  skills/ruview-presence/
+hermes/
+  README.md                    This file
+  scripts/
+    ruview_state.py            State machine + API polling (pure stdlib)
+    hermes-ruview-presence-cron.sh   Cron wrapper + env loading
+  skills/hermes-ruview-presence/
     SKILL.md                   Agent standing orders
-```
-
-State persists across sessions via JSON file in `~/.hermes/memories/`.
-
----
-
-## RuView API
-
-Primary endpoint: `GET /api/v1/pose/current`
-
-```json
-{
-  "timestamp": 1773088911.824,
-  "source": "simulate",
-  "total_persons": 1,
-  "persons": [
-    {
-      "id": 1,
-      "confidence": 0.78,
-      "zone": "zone_1",
-      "bbox": { "x": 270.4, "y": 133.2, "width": 136.6, "height": 235.1 },
-      "keypoints": [
-        { "name": "nose", "confidence": 0.59, "x": 336.5, "y": 151.8, "z": -0.22 },
-        ...
-      ]
-    }
-  ]
-}
 ```
 
 ---

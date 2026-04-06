@@ -1,5 +1,5 @@
 ---
-name: ruview-presence
+name: hermes-ruview-presence
 description: Presence-aware agent behavior powered by RuView WiFi sensing. Polls RuView's pose/presence API to detect whether the user is physically present, away, or just returned. Queues non-urgent messages when away, delivers a digest on return.
 ---
 
@@ -11,7 +11,7 @@ This skill gives the Hermes agent standing orders for presence-aware behavior ba
 
 On EVERY conversation start:
 
-1. Read state from `~/.hermes/memories/ruview-presence-state.json`
+1. Read state from `~/.hermes/memories/hermes-ruview-presence-state.json`
 2. If `current_state` is `"returned"` AND `pending_digest` is `true`: deliver the digest as your first message, then set `pending_digest: false` and `current_state: "present"` and save
 3. If `current_state` is `"away"`: queue mode - hold non-urgent outbound messages in the event queue (append to the `event_queue` list in the state file), save after each addition
 4. If RuView is unreachable when you need to check: use the last known state from the state file, do not change state
