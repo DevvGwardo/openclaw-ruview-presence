@@ -1,18 +1,33 @@
 <p align="center">
   <img src="https://img.shields.io/badge/OpenClaw-Plugin-blueviolet?style=for-the-badge" alt="OpenClaw Plugin">
+  <img src="https://img.shields.io/badge/Hermes-AI%20Agent-teal?style=for-the-badge" alt="Hermes AI Agent">
   <img src="https://img.shields.io/badge/RuView-WiFi%20Sensing-orange?style=for-the-badge" alt="RuView WiFi Sensing">
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License">
 </p>
 
-# OpenClaw RuView Presence
+# OpenClaw + Hermes RuView Presence
 
 **Presence-aware AI agents powered by WiFi sensing.** No cameras. No wearables. Just physics.
 
-Your OpenClaw agents detect whether you're physically present using WiFi signals. When you leave, they queue messages. When you return, they greet you with a digest of everything that happened while you were away.
+Detects whether you're physically present via RuView Channel State Information (CSI). When you leave, agents queue messages. When you return, they greet you with a digest of everything that happened while you were away.
+
+This repo has two implementations:
+
+| | [OpenClaw Plugin](./index.ts) | [Hermes Port](./hermes/) |
+|:---|:---|:---|
+| **Type** | TypeScript plugin (`index.ts`) | Python state machine + shell cron |
+| **Persistence** | In-memory (plugin lifecycle) | JSON file (`~/.hermes/memories/`) |
+| **Skill** | `skills/ruview-presence/` | `hermes/skills/hermes-ruview-presence/` |
+| **State** | In-process state machine | `ruview_state.py` + cron every 30s |
+
+**OpenClaw users:** start at the [OpenClaw section](#openclaw) below.
+**Hermes users:** see [`hermes/README.md`](./hermes/README.md) for full setup.
 
 ---
 
-## How It Works
+## OpenClaw {#openclaw}
+
+### How It Works
 
 ```
                   WiFi Signals
@@ -43,7 +58,7 @@ Your OpenClaw agents detect whether you're physically present using WiFi signals
 
 ---
 
-## Quick Start
+### Quick Start
 
 ### 1. Start RuView
 
@@ -64,7 +79,7 @@ curl -s http://localhost:3000/health/live
 
 ```bash
 # From local clone
-git clone https://github.com/DevvGwardo/openclaw-ruview-presence.git
+git clone https://github.com/MisterGuy420/openclaw-ruview-presence.git
 openclaw plugins install ./openclaw-ruview-presence
 
 # Or link for development
