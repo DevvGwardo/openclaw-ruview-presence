@@ -1,45 +1,37 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/OpenClaw-Plugin-blueviolet?style=for-the-badge" alt="OpenClaw Plugin">
-  <img src="https://img.shields.io/badge/RuView-WiFi%20Sensing-orange?style=for-the-badge" alt="RuView WiFi Sensing">
-  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License">
+  <img src="docs/hero-banner.png" alt="RuView Presence Banner" width="95%">
 </p>
 
-# OpenClaw RuView Presence
+<p align="center">
+  <a href="#"><img src="https://img.shields.io/badge/Presence%20Plugin-v0.1.0-8b5cf6?style=flat-square&labelColor=0a0a1a" alt="Version"></a>
+  <a href="#"><img src="https://img.shields.io/badge/WiFi%20Sensing-CSI%20Based-22d3ee?style=flat-square&labelColor=0a0a1a" alt="WiFi Sensing"></a>
+  <a href="#"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square&labelColor=0a0a1a" alt="License"></a>
+  <a href="#"><img src="https://img.shields.io/badge/OpenClaw-Plugin-3b82f6?style=flat-square&labelColor=0a0a1a" alt="OpenClaw Plugin"></a>
+</p>
+
+# RuView Presence
 
 **Presence-aware AI agents powered by WiFi sensing.** No cameras. No wearables. Just physics.
 
-Your OpenClaw agents detect whether you're physically present using WiFi signals. When you leave, they queue messages. When you return, they greet you with a digest of everything that happened while you were away.
+Your agents detect whether you're physically present using WiFi Channel State Information (CSI). When you leave, they queue non-urgent messages. When you return, they greet you with a digest of everything that happened while you were away.
 
 ---
 
 ## How It Works
 
-```
-                  WiFi Signals
-                      |
-              +-------v--------+
-              |    RuView      |     Detects presence via
-              | WiFi Sensing   |     Channel State Information (CSI)
-              +-------+--------+
-                      |
-              GET /api/v1/pose/current
-                      |
-              +-------v--------+
-              | ruview-presence |     State machine:
-              |   (this plugin) |     present -> away -> returned
-              +-------+--------+
-                      |
-              +-------v--------+
-              |    OpenClaw     |     Agents adapt behavior
-              |    Agents       |     based on your presence
-              +----------------+
-```
+<p align="center">
+  <img src="docs/architecture.png" alt="System Architecture" width="95%">
+</p>
 
 | State | What Happens |
 |:------|:-------------|
 | **Present** | Agents operate normally |
 | **Away** | Non-urgent messages are queued; urgent ones sent immediately |
 | **Returned** | Agents deliver a welcome-back digest, then resume normal operation |
+
+<p align="center">
+  <img src="docs/statemachine.png" alt="State Machine" width="80%">
+</p>
 
 ---
 
@@ -112,7 +104,7 @@ Add to your `openclaw.json`:
 cp -r skills/ruview-presence ~/.openclaw/skills/ruview-presence
 ```
 
-That's it. Your agents will start checking presence on their next heartbeat. You'll see this in the logs confirming the skill was picked up:
+That's it. Your agents will start checking presence on their next heartbeat. You'll see this in the logs:
 
 ```
 config change detected; evaluating reload (skills)
@@ -147,7 +139,7 @@ These are the actual responses from RuView that the plugin works with.
 
 ### Pose Detection (`GET /api/v1/pose/current`)
 
-This is the primary endpoint used for presence detection.
+The primary endpoint used for presence detection.
 
 ```json
 {
@@ -205,7 +197,7 @@ Each person includes 17 DensePose-compatible keypoints: nose, left/right eye, le
 
 ### Full Sensing Data (`GET /api/v1/sensing/latest`)
 
-Returns everything above plus raw signal features (mean RSSI, spectral power, motion/breathing band power), per-sensor subcarrier amplitudes, RF tomography voxel grid, and classification:
+Returns everything above plus raw signal features (mean RSSI, spectral power, motion/breathing band power), per-sensor subcarrier amplitudes, RF tomography voxel grid, and classification.
 
 ```json
 {
@@ -244,7 +236,7 @@ Types match the actual RuView API response format — `RuViewPoseResponse`, `RuV
 
 ### Skill Layer (`skills/ruview-presence/`)
 
-Provides standing orders that agents follow during heartbeat cycles. The skill gives agents explicit instructions for presence-aware behavior — checking the API, interpreting results, and acting on state changes. Includes the actual JSON response format so agents can parse responses correctly.
+Provides standing orders that agents follow during heartbeat cycles. Gives agents explicit instructions for presence-aware behavior — checking the API, interpreting results, and acting on state changes. Includes the actual JSON response format so agents can parse responses correctly.
 
 ### Gateway RPC Methods
 
@@ -298,6 +290,10 @@ openclaw-ruview-presence/
   index.ts                 Plugin entry point (state machine, polling, digest)
   openclaw.plugin.json     Plugin manifest and config schema
   package.json             Package definition
+  docs/
+    hero-banner.png        README hero banner
+    architecture.png       System architecture diagram
+    statemachine.png       State machine diagram
   skills/
     ruview-presence/
       SKILL.md             Agent standing orders with API response formats
