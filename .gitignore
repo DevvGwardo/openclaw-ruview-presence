@@ -1,8 +1,10 @@
 node_modules/
 dist/
 *.js
+!openclaw.plugin.json
+!vitest.config.ts
 *.js.map
 *.d.ts
-!openclaw.plugin.json
 .env
 .DS_Store
+coverage/

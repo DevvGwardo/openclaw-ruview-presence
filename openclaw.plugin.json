@@ -2,7 +2,7 @@
   "id": "ruview-presence",
   "name": "RuView Presence",
   "description": "Presence-aware agent behavior powered by RuView WiFi sensing. Detects user presence via WiFi CSI and adapts agent behavior — queuing messages when away, delivering digests on return.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "kind": "integration",
   "skills": ["ruview-presence"],
   "configSchema": {
@@ -10,37 +10,64 @@
     "additionalProperties": false,
     "properties": {
       "ruviewUrl": {
-        "type": "string"
+        "type": "string",
+        "default": "http://localhost:3000",
+        "description": "RuView API base URL (no trailing slash)"
+      },
+      "apiKey": {
+        "type": "string",
+        "description": "Optional Bearer token if RuView auth is enabled (env RUVIEW_API_KEY)"
       },
       "pollIntervalMs": {
         "type": "number",
-        "minimum": 1000
+        "minimum": 1000,
+        "default": 10000,
+        "description": "Poll interval in ms (min 1000, default 10000)"
       },
       "confidenceThreshold": {
         "type": "number",
         "minimum": 0,
-        "maximum": 1
+        "maximum": 1,
+        "default": 0.3,
+        "description": "Min confidence to count as present (0-1)"
       },
       "debounceCount": {
         "type": "number",
-        "minimum": 1
+        "minimum": 1,
+        "default": 2,
+        "description": "Consecutive empty reads before marking away"
       },
       "enableDigest": {
-        "type": "boolean"
+        "type": "boolean",
+        "default": true,
+        "description": "Deliver welcome-back digest on return"
       },
       "enableZoneAwareness": {
-        "type": "boolean"
+        "type": "boolean",
+        "default": false,
+        "description": "Track zone/room for smarter behavior"
+      },
+      "maxQueueSize": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 500,
+        "default": 100,
+        "description": "Max queued events while away (oldest non-urgent dropped first)"
       }
     }
   },
   "uiHints": {
     "ruviewUrl": {
       "label": "RuView URL",
-      "help": "Base URL of the RuView sensing server (default: http://localhost:3000)."
+      "help": "Base URL of the RuView sensing server (default: http://localhost:3000). Example: http://192.168.1.20:3000"
+    },
+    "apiKey": {
+      "label": "RuView API Key",
+      "help": "Only needed if you set RUVIEW_API_TOKEN on the server. Leave blank for default unauthenticated local setup."
     },
     "pollIntervalMs": {
       "label": "Poll Interval (ms)",
-      "help": "How often to check presence on heartbeat, in milliseconds (default: 10000)."
+      "help": "How often to check presence on heartbeat, in milliseconds (default: 10000, min 1000)."
     },
     "confidenceThreshold": {
       "label": "Confidence Threshold",
@@ -57,6 +84,10 @@
     "enableZoneAwareness": {
       "label": "Enable Zone Awareness",
       "help": "Track which zone the user is in for smarter behavior (default: false)."
+    },
+    "maxQueueSize": {
+      "label": "Max Queue Size",
+      "help": "Maximum queued events while away (default: 100). Oldest non-urgent items are dropped first."
     }
   }
 }
