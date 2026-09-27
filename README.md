@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/DevvGwardo/openclaw-ruview-presence/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/DevvGwardo/openclaw-ruview-presence/ci.yml?branch=main&style=flat-square&labelColor=0a0a1a&label=CI" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.1.2-8b5cf6?style=flat-square&labelColor=0a0a1a" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.1.3-8b5cf6?style=flat-square&labelColor=0a0a1a" alt="Version">
   <a href="https://github.com/openclaw/openclaw"><img src="https://img.shields.io/badge/OpenClaw-Plugin-3b82f6?style=flat-square&labelColor=0a0a1a" alt="OpenClaw Plugin"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square&labelColor=0a0a1a" alt="License"></a>
 </p>
@@ -123,12 +123,12 @@ openclaw gateway call ruview.presence      # current state
 
 The gateway log should show `ruview-presence: initialized (url=..., threshold=0.3, debounce=2, auth=off)`.
 
-### Optional: the agent skill
+### The bundled skill
 
-`skills/ruview-presence/` holds standing orders that tell an agent to query RuView itself on each heartbeat. The plugin already does this automatically, so you only need the skill if you want the agent to see raw RuView data (vital signs, zones and so on) in its own turns:
+The plugin ships a `ruview-presence` skill that loads automatically when the plugin is enabled. It tells the agent that presence is already handled, so the agent doesn't poll on its own, and shows it how to turn the welcome-back digest into a reply. It also teaches the agent how to query RuView on demand, for questions like "is anyone in the office?" or "what's my breathing rate?". To check that it loaded:
 
 ```bash
-cp -r skills/ruview-presence ~/.openclaw/skills/ruview-presence
+openclaw skills info ruview-presence
 ```
 
 ---
@@ -337,7 +337,7 @@ index.ts                  Plugin: polling, state machine, digest, RPC methods
 openclaw.plugin.json      Manifest: config schema, UI hints, startup activation
 tests/presence.test.ts    Unit tests (state machine, queue, RPC handlers)
 scripts/live-rssi-bridge.py  macOS RSSI → CSI bridge for RuView
-skills/ruview-presence/   Optional agent skill (standing orders + API formats)
+skills/ruview-presence/   Bundled agent skill (loaded with the plugin)
 docs/                     README images
 .github/workflows/ci.yml  CI
 ```

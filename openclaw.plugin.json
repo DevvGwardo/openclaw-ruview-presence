@@ -2,12 +2,12 @@
   "id": "ruview-presence",
   "name": "RuView Presence",
   "description": "Presence-aware agent behavior powered by RuView WiFi sensing. Detects user presence via WiFi CSI and adapts agent behavior — queuing messages when away, delivering digests on return.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "activation": {
     "onStartup": true
   },
   "skills": [
-    "ruview-presence"
+    "./skills"
   ],
   "configSchema": {
     "type": "object",
