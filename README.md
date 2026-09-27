@@ -3,31 +3,51 @@
 </p>
 
 <p align="center">
-  <a href="#"><img src="https://img.shields.io/badge/Presence%20Plugin-v0.1.2-8b5cf6?style=flat-square&labelColor=0a0a1a" alt="Version"></a>
-  <a href="#"><img src="https://img.shields.io/badge/WiFi%20Sensing-CSI%20Based-22d3ee?style=flat-square&labelColor=0a0a1a" alt="WiFi Sensing"></a>
-  <a href="#"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square&labelColor=0a0a1a" alt="License"></a>
-  <a href="#"><img src="https://img.shields.io/badge/OpenClaw-Plugin-3b82f6?style=flat-square&labelColor=0a0a1a" alt="OpenClaw Plugin"></a>
+  <a href="https://github.com/DevvGwardo/openclaw-ruview-presence/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/DevvGwardo/openclaw-ruview-presence/ci.yml?branch=main&style=flat-square&labelColor=0a0a1a&label=CI" alt="CI"></a>
+  <img src="https://img.shields.io/badge/version-0.1.2-8b5cf6?style=flat-square&labelColor=0a0a1a" alt="Version">
+  <a href="https://github.com/openclaw/openclaw"><img src="https://img.shields.io/badge/OpenClaw-Plugin-3b82f6?style=flat-square&labelColor=0a0a1a" alt="OpenClaw Plugin"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square&labelColor=0a0a1a" alt="License"></a>
 </p>
 
 # RuView Presence
 
-**Presence-aware AI agents powered by WiFi sensing.** No cameras. No wearables. Just physics.
+**Your AI agents know when you're at your desk.** No cameras, no wearables: just WiFi.
 
-Your agents detect whether you're physically present using WiFi Channel State Information (CSI). When you leave, they queue non-urgent messages. When you return, they greet you with a digest of everything that happened while you were away.
+This [OpenClaw](https://github.com/openclaw/openclaw) plugin reads presence from a [RuView](https://github.com/ruvnet/RuView) WiFi sensing server. When you walk away, non-urgent messages are held. When you come back, your agent opens with a summary of what you missed:
+
+```text
+Welcome back! You were away for 42m.
+
+While you were away:
+- 1 message(s) queued (github: 1)
+- 1 task(s) updated
+- 1 urgent item(s) were sent immediately
+
+Queued items:
+- [message · github] PR #12 approved by reviewer
+- [task] nightly build finished
+
+Ready when you are.
+```
+
+> [!IMPORTANT]
+> **Detecting that you've left needs real CSI hardware** (such as ESP32-S3 nodes, ~$54). Out of the box RuView runs in simulation mode, which always reports someone present. The included macOS RSSI bridge feeds real signal strength but synthetic motion, so it can't detect an empty room either. Both are fine for trying the plugin out. See [Hardware options](#hardware-options).
 
 ---
 
-## How It Works
+## How it works
 
 <p align="center">
   <img src="docs/architecture.png" alt="System Architecture" width="95%">
 </p>
 
-| State | What Happens |
+Before each agent turn, the plugin polls RuView (at most once per `pollIntervalMs`) and moves between three states:
+
+| State | What happens |
 |:------|:-------------|
-| **Present** | Agents operate normally |
-| **Away** | Non-urgent messages are queued; urgent ones sent immediately |
-| **Returned** | Agents deliver a welcome-back digest, then resume normal operation |
+| **Present** | Agents work normally |
+| **Away** | After `debounceCount` empty readings in a row. Non-urgent events are held; urgent ones are still sent right away |
+| **Returned** | On the first detection after being away. The digest is added to the agent's context, the queue is cleared, and the state goes back to present |
 
 <p align="center">
   <img src="docs/statemachine.png" alt="State Machine" width="80%">
@@ -35,73 +55,51 @@ Your agents detect whether you're physically present using WiFi Channel State In
 
 ---
 
-## Quick Start
+## Quick start
 
 ### 1. Start RuView
 
 ```bash
-# Simulation (no hardware, synthetic data tagged "simulated")
+# Simulation: no hardware, synthetic data (source: "simulated")
 docker run -d -p 3000:3000 --name ruview \
   -e RUVIEW_ALLOW_UNAUTHENTICATED=1 \
   ruvnet/wifi-densepose:latest
 
-# Live CSI (with ESP32 nodes — exposes UDP 5005 for ADR-018 frames)
+# Live: also listen on UDP 5005 for CSI frames from ESP32 nodes or the macOS bridge
 docker run -d -p 3000:3000 -p 5005:5005/udp --name ruview \
   -e RUVIEW_ALLOW_UNAUTHENTICATED=1 \
   -e RUVIEW_UDP_BIND=0.0.0.0 -e RUVIEW_UDP_INSECURE_LAN=true \
   ruvnet/wifi-densepose:latest
 ```
 
-Verify it's running:
+`RUVIEW_ALLOW_UNAUTHENTICATED=1` is for a local or trusted network only. Otherwise set `RUVIEW_API_TOKEN` on the server and `apiKey` in the plugin config.
+
+Check that it's up:
 
 ```bash
-curl -s http://localhost:3000/health/live
-# {"status":"alive","uptime":4}
-curl -s http://localhost:3000/api/v1/pose/current | jq .source
-# "simulated" (no hardware) or "esp32"/"csi" (live)
+curl -s http://localhost:3000/health/live               # {"status":"alive",...}
+curl -s http://localhost:3000/api/v1/pose/current | jq .source   # "simulated", or "esp32"/"csi" when live
 ```
 
-> Works in simulation mode out of the box — no WiFi hardware needed for testing. The `source` field shows `"simulated"` (synthetic) vs `"esp32"`/`"csi"`/`"wifi"` (real hardware). See [Hardware Options](#hardware-options) for live setup. On macOS the local WiFi chip does not expose per-subcarrier CSI — use the included `scripts/live-rssi-bridge.py` for a live RSSI-anchored demo without ESP32 hardware.
-
-### 2. Install the Plugin
+### 2. Install the plugin
 
 ```bash
-# From local clone
 git clone https://github.com/DevvGwardo/openclaw-ruview-presence.git
-openclaw plugins install ./openclaw-ruview-presence
-
-# Or link for development
-openclaw plugins install -l ./openclaw-ruview-presence
+openclaw plugins install ./openclaw-ruview-presence      # or: install -l to link for development
 ```
 
-### 3. Configure
+### 3. Configure it
 
-Add to your `openclaw.json`:
+In `openclaw.json` (every option is listed in the [configuration reference](#configuration-reference)):
 
-```jsonc
+```json
 {
-  // Plugin configuration (runtime logic)
   "plugins": {
     "entries": {
       "ruview-presence": {
         "enabled": true,
         "config": {
-          "ruviewUrl": "http://localhost:3000",
-          "confidenceThreshold": 0.3,
-          "debounceCount": 2,
-          "enableDigest": true
-        }
-      }
-    }
-  },
-
-  // Skill configuration (agent instructions)
-  "skills": {
-    "entries": {
-      "ruview-presence": {
-        "enabled": true,
-        "env": {
-          "RUVIEW_API_URL": "http://localhost:3000"
+          "ruviewUrl": "http://localhost:3000"
         }
       }
     }
@@ -109,46 +107,129 @@ Add to your `openclaw.json`:
 }
 ```
 
-### 4. Install the Bundled Skill
+Or from the CLI:
+
+```bash
+openclaw config set plugins.entries.ruview-presence.config '{"ruviewUrl":"http://localhost:3000"}' --strict-json
+```
+
+### 4. Restart the gateway and check it
+
+```bash
+openclaw plugins list | grep ruview        # should show ruview-presence as enabled
+openclaw gateway call ruview.health        # live probe of RuView through the plugin
+openclaw gateway call ruview.presence      # current state
+```
+
+The gateway log should show `ruview-presence: initialized (url=..., threshold=0.3, debounce=2, auth=off)`.
+
+### Optional: the agent skill
+
+`skills/ruview-presence/` holds standing orders that tell an agent to query RuView itself on each heartbeat. The plugin already does this automatically, so you only need the skill if you want the agent to see raw RuView data (vital signs, zones and so on) in its own turns:
 
 ```bash
 cp -r skills/ruview-presence ~/.openclaw/skills/ruview-presence
 ```
 
-That's it. Your agents will start checking presence on their next heartbeat. You'll see this in the logs:
+---
 
+## Sending events to the queue
+
+Anything that would notify you (a channel, a cron job, another plugin) can go through `ruview.queueEvent` first:
+
+```bash
+openclaw gateway call ruview.queueEvent \
+  --params '{"type":"message","summary":"PR #12 approved","channel":"github"}'
+# {"queued": true, "total": 1}   → you're away: hold it, it'll be in the digest
+# {"queued": false, "total": 0}  → you're here (or it's urgent): deliver it now
 ```
-config change detected; evaluating reload (skills)
-config change applied (dynamic reads: skills)
-```
+
+- `type`: `message`, `task`, `notification` or `error`
+- `summary`: required; the text shown in the digest (max 500 chars)
+- `channel`: optional; grouped in the digest counts
+- `priority`: `normal` (default) or `urgent`. Urgent events always return `queued: false`, and are counted in the digest as sent
+
+Invalid params return an `INVALID_REQUEST` error.
 
 ---
 
-### Configuration Reference
+## Configuration reference
 
 | Option | Type | Default | Description |
 |:-------|:-----|:--------|:------------|
-| `ruviewUrl` | `string` | `http://localhost:3000` | RuView API base URL (trailing slash is auto-trimmed) |
-| `apiKey` | `string` | _(none)_ | Bearer token if RuView auth is enabled (env `RUVIEW_API_KEY`) |
-| `pollIntervalMs` | `number` | `10000` | How often to poll RuView (ms, min 1000) |
-| `confidenceThreshold` | `number` | `0.3` | Minimum detection confidence to count as "present" (0-1) |
-| `debounceCount` | `number` | `2` | Consecutive empty readings before marking as "away" |
-| `enableDigest` | `boolean` | `true` | Show a summary digest when the user returns |
-| `enableZoneAwareness` | `boolean` | `false` | Track which room/zone the user is in |
-| `maxQueueSize` | `number` | `100` | Max queued events while away (oldest non-urgent dropped first) |
+| `ruviewUrl` | `string` | `http://localhost:3000` | RuView base URL (a trailing slash is trimmed). Env: `RUVIEW_API_URL` |
+| `apiKey` | `string` | _(none)_ | Sent as `Authorization: Bearer ...` if RuView auth is on. Env: `RUVIEW_API_KEY` |
+| `pollIntervalMs` | `number` | `10000` | Minimum time between polls (min `1000`) |
+| `confidenceThreshold` | `number` | `0.3` | Minimum detection confidence (0–1) to count as present |
+| `debounceCount` | `number` | `2` | Empty readings in a row before switching to away |
+| `enableDigest` | `boolean` | `true` | Add the welcome-back digest on return |
+| `enableZoneAwareness` | `boolean` | `false` | Also fetch RuView's zone summary; exposed as `zones` in `ruview.presence` |
+| `maxQueueSize` | `number` | `100` | Max held events (1–500); the oldest non-urgent is dropped first |
 
-All options can also be set via environment variables:
-
-| Environment Variable | Maps To |
-|:---------------------|:--------|
-| `RUVIEW_API_URL` | `ruviewUrl` |
-| `RUVIEW_API_KEY` | Auth token (if RuView auth is enabled) |
+Only `ruviewUrl` and `apiKey` can come from environment variables; config values take precedence. Invalid values are logged and corrected: `pollIntervalMs` is raised to 1000, and anything else falls back to its default.
 
 ---
 
-## RuView API Data
+## Gateway RPC methods
 
-These are the actual responses from RuView that the plugin works with.
+| Method | Scope | Returns |
+|:-------|:------|:--------|
+| `ruview.presence` | `operator.read` | `{ state, zone, awaySince, queuedEvents, detectedPersons, source, zones }` |
+| `ruview.diagnostics` | `operator.read` | Everything above except `zones`, plus `previousState, emptyCheckCount, consecutiveErrors, lastErrorAt, lastDataAgeMs, isLive` |
+| `ruview.health` | `operator.read` | `{ ok: true, source, detected, persons, zone, dataAgeMs }` from a live probe (ignores the poll interval), or an `UNAVAILABLE` error |
+| `ruview.queueEvent` | `operator.write` | `{ queued, total }`; see [Sending events to the queue](#sending-events-to-the-queue) |
+
+---
+
+## Hardware options
+
+| Option | Hardware | Cost | Can detect absence? |
+|:-------|:---------|:-----|:--------------------|
+| **Simulation** | Any computer | $0 | ❌ Always reports someone present |
+| **macOS RSSI bridge** | Any Mac + `scripts/live-rssi-bridge.py` | $0 | ❌ Real signal strength, synthetic motion. Good for testing the live pipeline |
+| **ESP32 (recommended)** | 3–6× ESP32-S3 + router | ~$54 | ✅ Full CSI: pose, breathing, heart rate, motion |
+| **Research NICs** | Intel 5300 / Atheros AR9580 | ~$50–100 | ✅ Full CSI with 3×3 MIMO |
+
+**The macOS bridge.** Apple Silicon WiFi chips don't expose per-subcarrier CSI, only signal strength. The bridge reads RSSI from `system_profiler`, wraps it in CSI frames, and sends them to RuView on UDP 5005. RuView then switches from `simulated` to `esp32` and reports your real `mean_rssi`:
+
+```bash
+python3 scripts/live-rssi-bridge.py          # 20 Hz to 127.0.0.1:5005
+curl -s http://localhost:3000/api/v1/sensing/latest | jq '.source, .features.mean_rssi'
+```
+
+`system_profiler` takes several seconds per read, so the first real RSSI value appears after about 5–10s. Until then frames carry a -50 dBm placeholder.
+
+---
+
+## Reliability
+
+- **RuView down?** The plugin keeps the last known state and retries on the next poll. Failures are counted in `consecutiveErrors`, and a warning is logged on the 1st and every 10th.
+- **Brief signal drop?** You're only marked away after `debounceCount` empty readings in a row.
+- **Stale data?** Readings older than 30s are still used, but a warning is logged once and the age is shown as `lastDataAgeMs`.
+- **Long absence?** The queue is capped at `maxQueueSize`, and it's cleared on every return (even with the digest off), so one absence never spills into the next.
+- **Simulated data?** Logged once when the source changes, and `isLive` in `ruview.diagnostics` is `false`.
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|:--------|:----|
+| `unknown method: ruview.presence` | The plugin isn't loaded. Check `openclaw plugins list`, then restart the gateway. Plugin versions before 0.1.2 don't load on current OpenClaw (missing `activation.onStartup`) |
+| Always "present" | Expected with simulation or the macOS bridge; see [Hardware options](#hardware-options) |
+| `source` stays `simulated` | No frames on UDP 5005. Make sure `-p 5005:5005/udp` is published and check `docker logs ruview` |
+| `refusing to start ... RUVIEW_API_TOKEN is unset` | Add `-e RUVIEW_ALLOW_UNAUTHENTICATED=1` (trusted networks only), or set `RUVIEW_API_TOKEN` on the server and `apiKey` in the config |
+| RuView won't bind UDP on `0.0.0.0` | `RUVIEW_UDP_BIND=0.0.0.0` also needs `RUVIEW_UDP_INSECURE_LAN=true`. For local-only use, keep the default `127.0.0.1` |
+| Port 3000 already in use | Map another port (`-p 3100:3000`) and set `ruviewUrl` to match |
+| RuView returns `429` | Raise `pollIntervalMs` to `15000` or more. A `429` counts as unreachable, so the state is kept meanwhile |
+| `ruview.health` returns `UNAVAILABLE` | RuView isn't reachable at `ruviewUrl`. Try `curl <ruviewUrl>/health/live` from the gateway host |
+
+---
+
+## RuView API reference
+
+<details>
+<summary>The RuView responses this plugin reads (click to expand)</summary>
 
 ### Pose Detection (`GET /api/v1/pose/current`)
 
@@ -157,7 +238,7 @@ The primary endpoint used for presence detection.
 ```json
 {
   "timestamp": 1773088911.824,
-  "source": "simulate",
+  "source": "simulated",
   "total_persons": 1,
   "persons": [
     {
@@ -203,7 +284,7 @@ Each person includes 17 DensePose-compatible keypoints: nose, left/right eye, le
     "heartbeat_confidence": 0.67,
     "signal_quality": 0.52
   },
-  "source": "simulate",
+  "source": "simulated",
   "tick": 19612
 }
 ```
@@ -237,122 +318,36 @@ Returns everything above plus raw signal features (mean RSSI, spectral power, mo
 { "status": "alive", "uptime": 1961 }
 ```
 
----
-
-## Architecture
-
-### Plugin Layer (`index.ts`)
-
-Hooks into OpenClaw's `before_prompt_build` lifecycle event to poll RuView and manage state transitions. When the user returns after being away, the plugin prepends a digest summary to the agent's context.
-
-Types match the actual RuView API response format — `RuViewPoseResponse`, `RuViewZoneSummary`, `RuViewVitalSigns`, and `RuViewSensingLatest` are all typed to the real payloads.
-
-### Skill Layer (`skills/ruview-presence/`)
-
-Provides standing orders that agents follow during heartbeat cycles. Gives agents explicit instructions for presence-aware behavior — checking the API, interpreting results, and acting on state changes. Includes the actual JSON response format so agents can parse responses correctly.
-
-### Gateway RPC Methods
-
-The plugin exposes gateway methods for programmatic access:
-
-| Method | Scope | Returns |
-|:-------|:------|:--------|
-| `ruview.presence` | `operator.read` | `{ state, zone, awaySince, queuedEvents, detectedPersons, source, zones }` (`zones` is set when zone awareness is on) |
-| `ruview.diagnostics` | `operator.read` | `{ state, previousState, zone, awaySince, queuedEvents, detectedPersons, source, emptyCheckCount, consecutiveErrors, lastErrorAt, lastDataAgeMs, isLive }` |
-| `ruview.health` | `operator.read` | `{ ok: true, source, detected, persons, zone, dataAgeMs }`, or an `UNAVAILABLE` error when RuView is unreachable (live probe, bypasses throttle) |
-| `ruview.queueEvent` | `operator.write` | `{ queued, total }` |
-
-`ruview.queueEvent` takes `{ type, summary, channel?, priority? }`, where `type` is `message`, `task`, `notification` or `error` and `priority` is `normal` or `urgent`. Invalid params return an `INVALID_REQUEST` error. `queued: true` means hold the item: the user is away and it appears in the welcome-back digest. `queued: false` means deliver it now, either because the user is present or because it's urgent (urgent items sent while away are still counted in the digest).
+</details>
 
 ---
-
-## Hardware Options
-
-RuView runs in simulation mode by default (`source: "simulated"` in responses). For real-world presence detection (`source: "csi"`/`"esp32"`/`"wifi"`):
-
-| Option | Hardware | Cost | Capability |
-|:-------|:---------|:-----|:-----------|
-| **No hardware** | Any computer | $0 | Simulation mode (synthetic data) |
-| **RSSI bridge (dev)** | Any Mac + `scripts/live-rssi-bridge.py` | $0 | Live RSSI-anchored CSI (real RSSI, synthetic I/Q and motion). Tests the live pipeline; it does **not** detect real absence |
-| **Recommended** | 3-6x ESP32-S3 + router | ~$54 | Full CSI: pose, breathing, heartbeat, motion |
-| **Research** | Intel 5300 / Atheros AR9580 | ~$50-100 | Full CSI with 3x3 MIMO |
-
-On Apple Silicon the Broadcom WiFi chip does not expose per-subcarrier CSI. The bridge reads live RSSI from `system_profiler` (on a background thread, since it takes several seconds) and injects ADR-018 frames to `UDP 5005`, which promotes RuView from `simulated → esp32` with live `mean_rssi`.
-
----
-
-## Fault Tolerance
-
-- If RuView is unreachable, the plugin **keeps the last known state** and retries on the next heartbeat (errors are counted in `consecutiveErrors`; logged every 10th failure to avoid spam)
-- The debounce mechanism prevents false "away" triggers from momentary signal drops (requires 2 consecutive empty readings by default)
-- URL trailing slashes are auto-trimmed; `RUVIEW_API_KEY` is sent as `Bearer` when set
-- Queue is capped at `maxQueueSize` (default 100; oldest non-urgent dropped first) to prevent unbounded memory growth
-- The queue is cleared on every return, even with `enableDigest: false`, so one absence never leaks into the next
-- Stale data (>30s old timestamp) is still used; the plugin warns once when it goes stale, and the age is reported as `lastDataAgeMs` in `ruview.diagnostics`
-- Urgent messages are always delivered immediately, regardless of presence state
-- The `source` field distinguishes `simulated` from `esp32`/`csi`/`wifi` (live hardware)
-
----
-
-## Troubleshooting
-
-| Problem | Solution |
-|:--------|:---------|
-| `refusing to start ... RUVIEW_API_TOKEN is unset` | Set `-e RUVIEW_ALLOW_UNAUTHENTICATED=1` (local/trusted net only) or `-e RUVIEW_API_TOKEN=$(openssl rand -hex 32)` and `apiKey` in config |
-| `vite` / `docker` fails on `:3000` bind | `RUVIEW_UDP_BIND=0.0.0.0` requires `RUVIEW_UDP_INSECURE_LAN=true` for routable UDP; otherwise keep `127.0.0.1:5005` and don't publish `5005/udp` |
-| Agent says "rate limit reached" | Your model provider is rate-limited. Switch with `openclaw models set <model>` |
-| Rate limited by RuView (`429`) | Increase `pollIntervalMs` to `15000+`. A `429` counts as unreachable, so the plugin keeps its last state meanwhile |
-| Port 3000 already in use | Map to different port: `docker run -d -p 3002:3000 ...` and update `ruviewUrl` |
-| Skill not detected | Check `openclaw logs` for `config change detected` — if missing, restart gateway |
-| Always shows "present" | In simulation RuView always returns a synthetic person, and the RSSI bridge synthesizes motion too. Real absence detection needs ESP32 (or other CSI) hardware |
-| `source` stays `simulated` | No CSI frames on `UDP 5005` — verify `docker logs ruview` shows `ESP32 CSI detected` and that `-p 5005:5005/udp` is published |
-
----
-
-## Project Structure
-
-```
-openclaw-ruview-presence/
-  index.ts                 Plugin entry point (state machine, polling, digest)
-  openclaw.plugin.json     Plugin manifest and config schema (defaults + validation)
-  package.json             Package definition + scripts (build/test/typecheck)
-  tsconfig.json            Strict TypeScript config
-  vitest.config.ts         Vitest config
-  tests/
-    presence.test.ts       Presence logic + fault tolerance tests
-  scripts/
-    live-rssi-bridge.py    Live RSSI→CSI bridge for macOS (no ESP32 needed)
-  docs/
-    hero-banner.png        README hero banner
-    architecture.png       System architecture diagram
-    statemachine.png       State machine diagram
-  skills/
-    ruview-presence/
-      SKILL.md             Agent standing orders with API response formats
-      HEARTBEAT.md         Heartbeat trigger
-```
 
 ## Development
 
 ```bash
 npm install
-npm run typecheck   # strict tsc --noEmit
-npm test            # vitest run
-npm run build       # tsc -p tsconfig.json → dist/
+npm run typecheck   # tsc --noEmit (strict)
+npm test            # vitest
+```
+
+CI runs both, plus a syntax check of the bridge script, on every push and PR.
+
+```text
+index.ts                  Plugin: polling, state machine, digest, RPC methods
+openclaw.plugin.json      Manifest: config schema, UI hints, startup activation
+tests/presence.test.ts    Unit tests (state machine, queue, RPC handlers)
+scripts/live-rssi-bridge.py  macOS RSSI → CSI bridge for RuView
+skills/ruview-presence/   Optional agent skill (standing orders + API formats)
+docs/                     README images
+.github/workflows/ci.yml  CI
 ```
 
 ## Requirements
 
-- Node >=18 (fetch, AbortController)
-- [OpenClaw](https://openclaw.com) agent runtime (`>=2026.3.1`)
+- [OpenClaw](https://github.com/openclaw/openclaw) `>=2026.3.1` (tested on 2026.6.34), on the Node version your OpenClaw release requires
 - [RuView](https://github.com/ruvnet/RuView) sensing server (Docker or native)
+- Python 3.10+ for the optional macOS bridge
 
 ## License
 
-MIT
-
----
-
-<p align="center">
-  <sub>Built with <a href="https://github.com/ruvnet/RuView">RuView</a> WiFi sensing and <a href="https://openclaw.com">OpenClaw</a> agent runtime.</sub>
-</p>
+[MIT](LICENSE)
