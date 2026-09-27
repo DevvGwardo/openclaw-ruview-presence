@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="#"><img src="https://img.shields.io/badge/Presence%20Plugin-v0.1.0-8b5cf6?style=flat-square&labelColor=0a0a1a" alt="Version"></a>
+  <a href="#"><img src="https://img.shields.io/badge/Presence%20Plugin-v0.1.2-8b5cf6?style=flat-square&labelColor=0a0a1a" alt="Version"></a>
   <a href="#"><img src="https://img.shields.io/badge/WiFi%20Sensing-CSI%20Based-22d3ee?style=flat-square&labelColor=0a0a1a" alt="WiFi Sensing"></a>
   <a href="#"><img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square&labelColor=0a0a1a" alt="License"></a>
   <a href="#"><img src="https://img.shields.io/badge/OpenClaw-Plugin-3b82f6?style=flat-square&labelColor=0a0a1a" alt="OpenClaw Plugin"></a>
@@ -255,12 +255,14 @@ Provides standing orders that agents follow during heartbeat cycles. Gives agent
 
 The plugin exposes gateway methods for programmatic access:
 
-| Method | Returns |
-|:-------|:--------|
-| `ruview.presence` | `{ state, zone, awaySince, queuedEvents, detectedPersons, source }` |
-| `ruview.diagnostics` | `{ state, zone, awaySince, queuedEvents, detectedPersons, source, emptyCheckCount, consecutiveErrors, lastErrorAt, isLive }` |
-| `ruview.health` | `{ ok, source, detected, persons, zone }` or `{ ok:false, error }` (live probe, bypasses throttle) |
-| `ruview.queueEvent` | `{ queued: true, total: <count> }` |
+| Method | Scope | Returns |
+|:-------|:------|:--------|
+| `ruview.presence` | `operator.read` | `{ state, zone, awaySince, queuedEvents, detectedPersons, source, zones }` (`zones` is set when zone awareness is on) |
+| `ruview.diagnostics` | `operator.read` | `{ state, previousState, zone, awaySince, queuedEvents, detectedPersons, source, emptyCheckCount, consecutiveErrors, lastErrorAt, lastDataAgeMs, isLive }` |
+| `ruview.health` | `operator.read` | `{ ok: true, source, detected, persons, zone, dataAgeMs }`, or an `UNAVAILABLE` error when RuView is unreachable (live probe, bypasses throttle) |
+| `ruview.queueEvent` | `operator.write` | `{ queued, total }` |
+
+`ruview.queueEvent` takes `{ type, summary, channel?, priority? }`, where `type` is `message`, `task`, `notification` or `error` and `priority` is `normal` or `urgent`. Invalid params return an `INVALID_REQUEST` error. `queued: true` means hold the item: the user is away and it appears in the welcome-back digest. `queued: false` means deliver it now, either because the user is present or because it's urgent (urgent items sent while away are still counted in the digest).
 
 ---
 
@@ -271,11 +273,11 @@ RuView runs in simulation mode by default (`source: "simulated"` in responses). 
 | Option | Hardware | Cost | Capability |
 |:-------|:---------|:-----|:-----------|
 | **No hardware** | Any computer | $0 | Simulation mode (synthetic data) |
-| **RSSI bridge (dev)** | Any Mac + `scripts/live-rssi-bridge.py` | $0 | Live RSSI-anchored CSI (real signal, synthetic I/Q) — see `scripts/` |
+| **RSSI bridge (dev)** | Any Mac + `scripts/live-rssi-bridge.py` | $0 | Live RSSI-anchored CSI (real RSSI, synthetic I/Q and motion). Tests the live pipeline; it does **not** detect real absence |
 | **Recommended** | 3-6x ESP32-S3 + router | ~$54 | Full CSI: pose, breathing, heartbeat, motion |
 | **Research** | Intel 5300 / Atheros AR9580 | ~$50-100 | Full CSI with 3x3 MIMO |
 
-On Apple Silicon the Broadcom WiFi chip does not expose per-subcarrier CSI. The bridge reads `system_profiler` RSSI (-50 dBm) and injects ADR-018 frames to `UDP 5005`, which promotes RuView from `simulated → esp32` with live `mean_rssi`.
+On Apple Silicon the Broadcom WiFi chip does not expose per-subcarrier CSI. The bridge reads live RSSI from `system_profiler` (on a background thread, since it takes several seconds) and injects ADR-018 frames to `UDP 5005`, which promotes RuView from `simulated → esp32` with live `mean_rssi`.
 
 ---
 
@@ -284,8 +286,9 @@ On Apple Silicon the Broadcom WiFi chip does not expose per-subcarrier CSI. The 
 - If RuView is unreachable, the plugin **keeps the last known state** and retries on the next heartbeat (errors are counted in `consecutiveErrors`; logged every 10th failure to avoid spam)
 - The debounce mechanism prevents false "away" triggers from momentary signal drops (requires 2 consecutive empty readings by default)
 - URL trailing slashes are auto-trimmed; `RUVIEW_API_KEY` is sent as `Bearer` when set
-- Queue is capped at 100 (oldest non-urgent dropped first) to prevent unbounded memory growth
-- Stale data (>30s old timestamp) is still used but can be surfaced via `ruview.diagnostics`
+- Queue is capped at `maxQueueSize` (default 100; oldest non-urgent dropped first) to prevent unbounded memory growth
+- The queue is cleared on every return, even with `enableDigest: false`, so one absence never leaks into the next
+- Stale data (>30s old timestamp) is still used; the plugin warns once when it goes stale, and the age is reported as `lastDataAgeMs` in `ruview.diagnostics`
 - Urgent messages are always delivered immediately, regardless of presence state
 - The `source` field distinguishes `simulated` from `esp32`/`csi`/`wifi` (live hardware)
 
@@ -298,10 +301,10 @@ On Apple Silicon the Broadcom WiFi chip does not expose per-subcarrier CSI. The 
 | `refusing to start ... RUVIEW_API_TOKEN is unset` | Set `-e RUVIEW_ALLOW_UNAUTHENTICATED=1` (local/trusted net only) or `-e RUVIEW_API_TOKEN=$(openssl rand -hex 32)` and `apiKey` in config |
 | `vite` / `docker` fails on `:3000` bind | `RUVIEW_UDP_BIND=0.0.0.0` requires `RUVIEW_UDP_INSECURE_LAN=true` for routable UDP; otherwise keep `127.0.0.1:5005` and don't publish `5005/udp` |
 | Agent says "rate limit reached" | Your model provider is rate-limited. Switch with `openclaw models set <model>` |
-| Rate limited by RuView (`429`) | Increase `pollIntervalMs` to `15000+` — plugin backs off on consecutive errors |
+| Rate limited by RuView (`429`) | Increase `pollIntervalMs` to `15000+`. A `429` counts as unreachable, so the plugin keeps its last state meanwhile |
 | Port 3000 already in use | Map to different port: `docker run -d -p 3002:3000 ...` and update `ruviewUrl` |
 | Skill not detected | Check `openclaw logs` for `config change detected` — if missing, restart gateway |
-| Always shows "present" | In simulation RuView always returns a synthetic person. Use `scripts/live-rssi-bridge.py` or real ESP32 hardware for true absence |
+| Always shows "present" | In simulation RuView always returns a synthetic person, and the RSSI bridge synthesizes motion too. Real absence detection needs ESP32 (or other CSI) hardware |
 | `source` stays `simulated` | No CSI frames on `UDP 5005` — verify `docker logs ruview` shows `ESP32 CSI detected` and that `-p 5005:5005/udp` is published |
 
 ---

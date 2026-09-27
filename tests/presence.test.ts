@@ -8,6 +8,35 @@ function mockFetchOnce(data: unknown, ok = true) {
     json: async () => data,
   } as Response)
 }
+function poseResponse(persons: Array<{ confidence: number; zone?: string }>, source = 'esp32') {
+  return { timestamp: Date.now() / 1000, source, total_persons: persons.length, persons: persons.map((p, i) => ({ id: i + 1, ...p })) }
+}
+
+// Registers the plugin against a mock API; exposes the heartbeat hook and RPC callers
+async function registerPlugin(pluginConfig: Record<string, unknown> = {}) {
+  const { default: plugin } = await import('../index.js')
+  const methods = new Map<string, (opts: any) => unknown>()
+  const api: any = {
+    pluginConfig: { pollIntervalMs: 0, ...pluginConfig },
+    logger: { info: vi.fn(), warn: vi.fn() },
+    on: vi.fn(),
+    registerGatewayMethod: vi.fn((name: string, handler: (opts: any) => unknown) => methods.set(name, handler)),
+  }
+  plugin.register(api)
+  const hook = api.on.mock.calls[0][1] as () => Promise<{ prependContext?: string } | undefined>
+  // Step past the poll throttle (min 1s) so every call actually polls
+  const heartbeat = () => {
+    vi.setSystemTime(Date.now() + 1_000)
+    return hook()
+  }
+  async function rpc(name: string, params: Record<string, unknown> = {}) {
+    const respond = vi.fn()
+    await methods.get(name)!({ params, respond })
+    const [ok, payload, error] = respond.mock.calls[0]
+    return { ok, payload, error, calls: respond.mock.calls.length }
+  }
+  return { api, heartbeat, rpc }
+}
 function mockFetchFail() {
   global.fetch = vi.fn().mockResolvedValue({ ok: false } as Response)
 }
@@ -19,8 +48,12 @@ describe('ruview-presence', () => {
   beforeEach(() => {
     _resetState()
     vi.restoreAllMocks()
+    vi.useFakeTimers({ toFake: ['Date'] })
   })
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
 
   it('getPresenceState returns defaults', () => {
     const s = getPresenceState()
@@ -106,5 +139,120 @@ describe('ruview-presence', () => {
     // state should remain present, not away
     expect(getPresenceState().state).toBe('present')
     expect(getPresenceDiagnostics().consecutiveErrors).toBe(1)
+  })
+
+  it('gateway methods reply via respond() with read/write scopes', async () => {
+    const { api, rpc } = await registerPlugin()
+    const scopes = Object.fromEntries(api.registerGatewayMethod.mock.calls.map((c: any[]) => [c[0], c[2]?.scope]))
+    expect(scopes).toEqual({
+      'ruview.presence': 'operator.read',
+      'ruview.diagnostics': 'operator.read',
+      'ruview.health': 'operator.read',
+      'ruview.queueEvent': 'operator.write',
+    })
+
+    const presence = await rpc('ruview.presence')
+    expect(presence.ok).toBe(true)
+    expect(presence.payload.state).toBe('present')
+    expect(presence.calls).toBe(1)
+  })
+
+  it('ruview.queueEvent reads the event from params and validates it', async () => {
+    const { rpc } = await registerPlugin()
+    _setStateForTest({ currentState: 'away' })
+
+    const ok = await rpc('ruview.queueEvent', { type: 'message', summary: 'build finished', channel: 'slack' })
+    expect(ok).toMatchObject({ ok: true, payload: { queued: true, total: 1 } })
+
+    const bad = await rpc('ruview.queueEvent', { type: 'spam', summary: 'x' })
+    expect(bad.ok).toBe(false)
+    expect(bad.error.code).toBe('INVALID_REQUEST')
+
+    const empty = await rpc('ruview.queueEvent', { type: 'message', summary: '  ' })
+    expect(empty.ok).toBe(false)
+    expect(getPresenceState().queuedEvents).toBe(1)
+  })
+
+  it('ruview.health reports UNAVAILABLE when RuView is down', async () => {
+    const { rpc } = await registerPlugin()
+    mockFetchReject()
+    const res = await rpc('ruview.health')
+    expect(res.ok).toBe(false)
+    expect(res.error.code).toBe('UNAVAILABLE')
+  })
+
+  it('honors maxQueueSize from config', async () => {
+    await registerPlugin({ maxQueueSize: 5 })
+    _setStateForTest({ currentState: 'away' })
+    for (let i = 0; i < 20; i++) queueEvent({ type: 'message', summary: `msg ${i}` })
+    expect(getPresenceState().queuedEvents).toBe(5)
+    expect(flushQueue().map((e) => e.summary)).toEqual(['msg 15', 'msg 16', 'msg 17', 'msg 18', 'msg 19'])
+  })
+
+  it('urgent events are delivered immediately but recorded for the digest', () => {
+    _setStateForTest({ currentState: 'away' })
+    expect(queueEvent({ type: 'message', summary: 'server down', priority: 'urgent' })).toBe(false)
+    expect(getPresenceState().queuedEvents).toBe(1)
+  })
+
+  it('goes away after debounce and injects a digest on return', async () => {
+    const { heartbeat } = await registerPlugin({ debounceCount: 2 })
+
+    mockFetchOnce(poseResponse([]))
+    await heartbeat()
+    expect(getPresenceState().state).toBe('present')
+    await heartbeat()
+    expect(getPresenceState().state).toBe('away')
+
+    queueEvent({ type: 'message', summary: 'PR #12 approved', channel: 'github' })
+    queueEvent({ type: 'message', summary: 'prod alert', priority: 'urgent' })
+
+    mockFetchOnce(poseResponse([{ confidence: 0.9, zone: 'office' }]))
+    const result = await heartbeat()
+    expect(result?.prependContext).toContain('Welcome back!')
+    expect(result?.prependContext).toContain('PR #12 approved')
+    expect(result?.prependContext).toContain('1 urgent item(s) were sent immediately')
+    expect(result?.prependContext).not.toContain('prod alert')
+    expect(getPresenceState()).toMatchObject({ state: 'present', queuedEvents: 0, zone: 'office' })
+  })
+
+  it('clears the queue on return even when the digest is disabled', async () => {
+    const { heartbeat } = await registerPlugin({ enableDigest: false, debounceCount: 1 })
+    mockFetchOnce(poseResponse([]))
+    await heartbeat()
+    queueEvent({ type: 'task', summary: 'done' })
+
+    mockFetchOnce(poseResponse([{ confidence: 0.9 }]))
+    expect(await heartbeat()).toBeUndefined()
+    expect(getPresenceState().queuedEvents).toBe(0)
+  })
+
+  it('ignores low-confidence detections', async () => {
+    const { heartbeat } = await registerPlugin({ debounceCount: 1, confidenceThreshold: 0.5 })
+    mockFetchOnce(poseResponse([{ confidence: 0.2 }]))
+    await heartbeat()
+    expect(getPresenceState().state).toBe('away')
+  })
+
+  it('stores zone summary when zone awareness is enabled', async () => {
+    const { heartbeat } = await registerPlugin({ enableZoneAwareness: true })
+    global.fetch = vi.fn().mockImplementation(async (url: string) => ({
+      ok: true,
+      json: async () => url.endsWith('/zones/summary')
+        ? { zones: { office: { person_count: 1, status: 'monitored' } } }
+        : poseResponse([{ confidence: 0.9, zone: 'office' }]),
+    }))
+    await heartbeat()
+    expect(getPresenceState().zones).toEqual({ office: { person_count: 1, status: 'monitored' } })
+  })
+
+  it('reports data age and warns once when RuView data is stale', async () => {
+    const { api, heartbeat } = await registerPlugin()
+    mockFetchOnce({ ...poseResponse([{ confidence: 0.9 }]), timestamp: Date.now() / 1000 - 120 })
+    await heartbeat()
+    await heartbeat()
+    expect(getPresenceDiagnostics().lastDataAgeMs).toBeGreaterThan(100_000)
+    const staleWarnings = api.logger.warn.mock.calls.filter((c: string[]) => c[0].includes('stale'))
+    expect(staleWarnings).toHaveLength(1)
   })
 })
