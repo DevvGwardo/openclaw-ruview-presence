@@ -212,6 +212,7 @@ describe('ruview-presence', () => {
     expect(result?.prependContext).toContain('Welcome back!')
     expect(result?.prependContext).toContain('PR #12 approved')
     expect(result?.prependContext).toContain('1 urgent item(s) were sent immediately')
+    expect(result?.prependContext).toContain('- 1 message(s) queued (github: 1)')
     expect(result?.prependContext).not.toContain('prod alert')
     expect(getPresenceState()).toMatchObject({ state: 'present', queuedEvents: 0, zone: 'office' })
   })
@@ -244,6 +245,16 @@ describe('ruview-presence', () => {
     }))
     await heartbeat()
     expect(getPresenceState().zones).toEqual({ office: { person_count: 1, status: 'monitored' } })
+
+    // An empty read still refreshes zones, so they don't keep showing the old occupant
+    global.fetch = vi.fn().mockImplementation(async (url: string) => ({
+      ok: true,
+      json: async () => url.endsWith('/zones/summary')
+        ? { zones: { office: { person_count: 0, status: 'clear' } } }
+        : poseResponse([]),
+    }))
+    await heartbeat()
+    expect(getPresenceState().zones).toEqual({ office: { person_count: 0, status: 'clear' } })
   })
 
   it('reports data age and warns once when RuView data is stale', async () => {

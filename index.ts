@@ -226,12 +226,14 @@ function buildDigest(): string {
   let urgentCount = 0;
 
   for (const event of eventQueue) {
+    // Urgent items were already delivered; count them separately from held ones
+    if (event.priority === "urgent") {
+      urgentCount++;
+      continue;
+    }
     byType[event.type] = (byType[event.type] ?? 0) + 1;
     if (event.channel) {
       byChannel[event.channel] = (byChannel[event.channel] ?? 0) + 1;
-    }
-    if (event.priority === "urgent") {
-      urgentCount++;
     }
   }
 
@@ -500,8 +502,8 @@ const ruviewPresencePlugin = {
         }
       }
 
-      // Zone data is exposed via ruview.presence
-      if (config.enableZoneAwareness && presence.detected) {
+      // Zone data is exposed via ruview.presence; refresh it on empty reads too so it never goes stale
+      if (config.enableZoneAwareness) {
         lastZoneSummary = (await checkZones(config)) ?? lastZoneSummary;
       }
 
