@@ -1,6 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
-declare const process: { env: Record<string, string | undefined> } | undefined;
+type GatewayMethodHandler = Parameters<OpenClawPluginApi["registerGatewayMethod"]>[1];
+type GatewayRespond = Parameters<GatewayMethodHandler>[0]["respond"];
 
 // --- Types (matching actual RuView API responses) ---
 type PresenceState = "present" | "away" | "returned";
@@ -120,8 +121,12 @@ let eventQueue: QueuedEvent[] = [];
 let lastPollTime = 0;
 let consecutiveErrors = 0;
 let lastErrorAt: number | null = null;
+let lastDataAgeMs: number | null = null;
+let lastZoneSummary: RuViewZoneSummary | null = null;
 
 const MAX_QUEUE_DEFAULT = 100;
+let maxQueueSize = MAX_QUEUE_DEFAULT;
+const QUEUE_EVENT_TYPES: ReadonlySet<string> = new Set(["message", "task", "notification", "error"]);
 const STALE_THRESHOLD_MS = 30_000;
 
 // --- Helpers ---
@@ -132,7 +137,7 @@ function normalizeUrl(url: string): string {
 
 function resolveConfig(input: unknown): PluginConfig {
   const cfg = (input ?? {}) as Partial<PluginConfig>;
-  const env = (typeof process !== "undefined" ? (process as unknown as { env: Record<string, string | undefined> }).env : {}) ?? {};
+  const env = typeof process !== "undefined" ? process.env : {};
   const rawUrl = cfg.ruviewUrl ?? env.RUVIEW_API_URL ?? "http://localhost:3000";
   return {
     ruviewUrl: normalizeUrl(rawUrl),
@@ -174,6 +179,7 @@ async function checkPresence(config: PluginConfig): Promise<{
   source: string | null;
   topConfidence: number | null;
   timestamp: number | null;
+  ageMs: number | null;
 } | null> {
   const data = await fetchJson<RuViewPoseResponse>(
     `${config.ruviewUrl}/api/v1/pose/current`,
@@ -184,20 +190,15 @@ async function checkPresence(config: PluginConfig): Promise<{
     return null;
   }
 
-  // Stale data check — warn if timestamp is too old
-  if (data.timestamp && config.staleThresholdMs > 0) {
-    const ageMs = Date.now() - data.timestamp * 1000;
-    if (ageMs > config.staleThresholdMs) {
-      // still use it, but caller could log
-    }
-  }
-
   const validPersons = (data.persons ?? []).filter((p) => p.confidence >= config.confidenceThreshold);
   const detected = validPersons.length > 0;
   const zone = detected ? (validPersons[0]?.zone ?? null) : null;
   const topConfidence = detected ? Math.max(...validPersons.map((p) => p.confidence)) : null;
 
-  return { detected, zone, persons: validPersons.length, source: data.source ?? null, topConfidence, timestamp: data.timestamp ?? null };
+  // RuView timestamps are epoch seconds
+  const ageMs = data.timestamp ? Date.now() - data.timestamp * 1000 : null;
+
+  return { detected, zone, persons: validPersons.length, source: data.source ?? null, topConfidence, timestamp: data.timestamp ?? null, ageMs };
 }
 
 async function checkZones(config: PluginConfig): Promise<RuViewZoneSummary | null> {
@@ -225,12 +226,14 @@ function buildDigest(): string {
   let urgentCount = 0;
 
   for (const event of eventQueue) {
+    // Urgent items were already delivered; count them separately from held ones
+    if (event.priority === "urgent") {
+      urgentCount++;
+      continue;
+    }
     byType[event.type] = (byType[event.type] ?? 0) + 1;
     if (event.channel) {
       byChannel[event.channel] = (byChannel[event.channel] ?? 0) + 1;
-    }
-    if (event.priority === "urgent") {
-      urgentCount++;
     }
   }
 
@@ -256,6 +259,15 @@ function buildDigest(): string {
     lines.push(`- ${urgentCount} urgent item(s) were sent immediately`);
   }
 
+  const pending = eventQueue.filter((e) => e.priority !== "urgent");
+  if (pending.length > 0) {
+    lines.push("", "Queued items:");
+    for (const event of pending.slice(-10)) {
+      lines.push(`- [${event.type}${event.channel ? ` · ${event.channel}` : ""}] ${event.summary}`);
+    }
+    if (pending.length > 10) lines.push(`- …and ${pending.length - 10} more`);
+  }
+
   lines.push("", "Ready when you are.");
   return lines.join("\n");
 }
@@ -269,6 +281,7 @@ export function getPresenceState(): {
   queuedEvents: number;
   detectedPersons: number;
   source: string | null;
+  zones: RuViewZoneSummary["zones"] | null;
 } {
   return {
     state: currentState,
@@ -277,6 +290,7 @@ export function getPresenceState(): {
     queuedEvents: eventQueue.length,
     detectedPersons: lastDetectedPersons,
     source: lastSource,
+    zones: lastZoneSummary?.zones ?? null,
   };
 }
 
@@ -291,6 +305,7 @@ export function getPresenceDiagnostics(): {
   emptyCheckCount: number;
   consecutiveErrors: number;
   lastErrorAt: number | null;
+  lastDataAgeMs: number | null;
   isLive: boolean;
 } {
   return {
@@ -304,24 +319,48 @@ export function getPresenceDiagnostics(): {
     emptyCheckCount,
     consecutiveErrors,
     lastErrorAt,
+    lastDataAgeMs,
     isLive: lastSource !== null && lastSource !== "simulate" && lastSource !== "simulated",
   };
 }
 
+/**
+ * Returns true when the caller should hold the event (user away, non-urgent).
+ * Urgent events are never held: they return false so the caller delivers them
+ * now, but while away they are still recorded for the welcome-back digest.
+ */
 export function queueEvent(event: Omit<QueuedEvent, "timestamp">): boolean {
   if (currentState !== "away") return false;
-  if (eventQueue.length >= MAX_QUEUE_DEFAULT) {
+  if (eventQueue.length >= maxQueueSize) {
     // drop oldest non-urgent to cap memory
     const idx = eventQueue.findIndex((e) => e.priority !== "urgent");
     if (idx !== -1) eventQueue.splice(idx, 1);
     else eventQueue.shift();
   }
   eventQueue.push({ ...event, timestamp: Date.now() });
-  // enforce cap strictly
-  if (eventQueue.length > MAX_QUEUE_DEFAULT) {
-    eventQueue = eventQueue.slice(-MAX_QUEUE_DEFAULT);
+  return event.priority !== "urgent";
+}
+
+function parseQueueEvent(params: Record<string, unknown>): Omit<QueuedEvent, "timestamp"> | string {
+  const { type, summary, channel, priority } = params;
+  if (typeof type !== "string" || !QUEUE_EVENT_TYPES.has(type)) {
+    return `type must be one of: ${[...QUEUE_EVENT_TYPES].join(", ")}`;
   }
-  return true;
+  if (typeof summary !== "string" || !summary.trim()) return "summary must be a non-empty string";
+  if (channel !== undefined && typeof channel !== "string") return "channel must be a string";
+  if (priority !== undefined && priority !== "normal" && priority !== "urgent") {
+    return 'priority must be "normal" or "urgent"';
+  }
+  return {
+    type: type as QueuedEvent["type"],
+    summary: summary.trim().slice(0, 500),
+    ...(channel ? { channel } : {}),
+    ...(priority ? { priority } : {}),
+  };
+}
+
+function respondError(respond: GatewayRespond, code: "INVALID_REQUEST" | "UNAVAILABLE", message: string): void {
+  respond(false, undefined, { code, message });
 }
 
 export function flushQueue(): QueuedEvent[] {
@@ -343,6 +382,9 @@ export function _resetState(): void {
   lastPollTime = 0;
   consecutiveErrors = 0;
   lastErrorAt = null;
+  lastDataAgeMs = null;
+  lastZoneSummary = null;
+  maxQueueSize = MAX_QUEUE_DEFAULT;
 }
 
 export function _setStateForTest(s: Partial<{ currentState: PresenceState; awaySince: number | null; eventQueue: QueuedEvent[] }>): void {
@@ -371,6 +413,15 @@ const ruviewPresencePlugin = {
       api.logger.warn?.(`ruview-presence: confidenceThreshold out of range, clamping to 0.3`);
       config.confidenceThreshold = 0.3;
     }
+    if (!Number.isInteger(config.debounceCount) || config.debounceCount < 1) {
+      api.logger.warn?.(`ruview-presence: debounceCount ${config.debounceCount} invalid, using 2`);
+      config.debounceCount = 2;
+    }
+    if (!Number.isInteger(config.maxQueueSize) || config.maxQueueSize < 1 || config.maxQueueSize > 500) {
+      api.logger.warn?.(`ruview-presence: maxQueueSize ${config.maxQueueSize} invalid, using ${MAX_QUEUE_DEFAULT}`);
+      config.maxQueueSize = MAX_QUEUE_DEFAULT;
+    }
+    maxQueueSize = config.maxQueueSize;
 
     const authNote = config.apiKey ? "auth=enabled" : "auth=off";
     api.logger.info?.(
@@ -402,17 +453,26 @@ const ruviewPresencePlugin = {
       // reachable — reset error counter
       consecutiveErrors = 0;
 
+      // Log source changes once (e.g. simulated -> esp32) rather than every poll
+      if (presence.source !== lastSource) {
+        const simulated = presence.source === "simulate" || presence.source === "simulated";
+        api.logger.info?.(
+          `ruview-presence: source=${presence.source}` +
+            (simulated ? " (synthetic data — presence will not reflect the real room)" : ""),
+        );
+      }
+
+      // Warn once when data goes stale, not on every poll
+      const isStale = presence.ageMs !== null && config.staleThresholdMs > 0 && presence.ageMs > config.staleThresholdMs;
+      const wasStale = lastDataAgeMs !== null && config.staleThresholdMs > 0 && lastDataAgeMs > config.staleThresholdMs;
+      if (isStale && !wasStale) {
+        api.logger.warn?.(`ruview-presence: RuView data is stale (${formatDuration(presence.ageMs ?? 0)} old)`);
+      }
+
       // Track metadata for RPC queries
       lastDetectedPersons = presence.persons;
       lastSource = presence.source;
-
-      // Warn about simulated vs live
-      if (presence.source === "simulate" || presence.source === "simulated") {
-        // only log once per session to avoid spam — use lastSource transition
-        if (previousState === "present" && currentState === "present" && lastDetectedPersons > 0) {
-          // no-op, already simulated
-        }
-      }
+      lastDataAgeMs = presence.ageMs;
 
       previousState = currentState;
 
@@ -442,59 +502,71 @@ const ruviewPresencePlugin = {
         }
       }
 
-      // Fetch zone data if enabled (fire-and-forget, result available via RPC if needed)
-      if (config.enableZoneAwareness && presence.detected) {
-        await checkZones(config);
+      // Zone data is exposed via ruview.presence; refresh it on empty reads too so it never goes stale
+      if (config.enableZoneAwareness) {
+        lastZoneSummary = (await checkZones(config)) ?? lastZoneSummary;
       }
 
-      // On return, inject digest into context
-      if (currentState === "returned" && config.enableDigest && eventQueue.length > 0) {
-        const digest = buildDigest();
-        flushQueue();
-        currentState = "present";
-        awaySince = null;
+      if (currentState !== "returned") return undefined;
 
-        if (digest) {
-          return {
-            prependContext: digest,
-          };
+      // On return: build the digest (if enabled) and always clear the queue so
+      // events from this absence don't leak into the next one
+      const digest = config.enableDigest ? buildDigest() : "";
+      flushQueue();
+      currentState = "present";
+      awaySince = null;
+
+      return digest ? { prependContext: digest } : undefined;
+    });
+
+    // Gateway RPC methods so agents can query presence. Handlers reply via
+    // respond(); return values are ignored by the gateway.
+    api.registerGatewayMethod(
+      "ruview.presence",
+      ({ respond }) => respond(true, getPresenceState()),
+      { scope: "operator.read" },
+    );
+
+    api.registerGatewayMethod(
+      "ruview.diagnostics",
+      ({ respond }) => respond(true, getPresenceDiagnostics()),
+      { scope: "operator.read" },
+    );
+
+    api.registerGatewayMethod(
+      "ruview.health",
+      async ({ respond }) => {
+        // live probe — bypasses the heartbeat throttle
+        const probe = await checkPresence(config);
+        if (probe === null) {
+          respondError(respond, "UNAVAILABLE", `RuView unreachable at ${config.ruviewUrl}`);
+          return;
         }
-      }
+        respond(true, {
+          ok: true,
+          source: probe.source,
+          detected: probe.detected,
+          persons: probe.persons,
+          zone: probe.zone,
+          dataAgeMs: probe.ageMs,
+        });
+      },
+      { scope: "operator.read" },
+    );
 
-      // On return with no queued events, just reset
-      if (currentState === "returned") {
-        currentState = "present";
-        awaySince = null;
-      }
-
-      return undefined;
-    });
-
-    // Register gateway RPC methods so agents can query presence
-    const gw = api as unknown as { registerGatewayMethod?: (name: string, handler: (params?: unknown) => unknown) => void };
-    gw.registerGatewayMethod?.("ruview.presence", async () => {
-      return getPresenceState();
-    });
-
-    gw.registerGatewayMethod?.("ruview.diagnostics", async () => {
-      return getPresenceDiagnostics();
-    });
-
-    gw.registerGatewayMethod?.("ruview.health", async () => {
-      // live probe — bypass throttle
-      const probe = await checkPresence({ ...config, pollIntervalMs: 0 } as PluginConfig);
-      if (probe === null) {
-        return { ok: false, error: "RuView unreachable", lastSource, consecutiveErrors };
-      }
-      return { ok: true, source: probe.source, detected: probe.detected, persons: probe.persons, zone: probe.zone };
-    });
-
-    // Register a gateway RPC method to queue events
-    gw.registerGatewayMethod?.("ruview.queueEvent", async (params: unknown) => {
-      const event = params as Omit<QueuedEvent, "timestamp">;
-      const queued = queueEvent(event);
-      return { queued, total: eventQueue.length };
-    });
+    api.registerGatewayMethod(
+      "ruview.queueEvent",
+      ({ params, respond }) => {
+        const event = parseQueueEvent(params ?? {});
+        if (typeof event === "string") {
+          respondError(respond, "INVALID_REQUEST", event);
+          return;
+        }
+        const queued = queueEvent(event);
+        respond(true, { queued, total: eventQueue.length });
+      },
+      { scope: "operator.write" },
+    );
   },
 };
 

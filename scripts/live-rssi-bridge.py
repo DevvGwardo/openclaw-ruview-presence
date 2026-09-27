@@ -28,9 +28,14 @@ Usage:
   # matches your real `system_profiler` RSSI (-50 dBm etc)
 
 Notes:
-  - `system_profiler` is slow (~1s) so RSSI is polled every 2s and cached.
+  - `system_profiler` is slow (several seconds) so RSSI is read on a background
+    thread; the send loop never blocks on it. Until the first read lands (or if
+    it fails) frames carry a fallback of -50/-92 dBm, and the bridge says so.
   - I/Q is synthetic but variance is modulated to trigger RuView's presence detector.
     First 8s = low variance (empty-room calibration), then active motion.
+    That motion is simulated, so after calibration RuView will report someone
+    present whether or not the room is empty. Use it to test the live pipeline,
+    not to detect real absence.
   - For true per-subcarrier CSI (pose/breathing through walls), buy ESP32-S3 DevKitC-1.
 """
 
@@ -39,6 +44,7 @@ import socket
 import struct
 import subprocess
 import re
+import threading
 import time
 import random
 import math
@@ -46,15 +52,20 @@ import math
 MAGIC = 0xC5110001
 
 
-def get_rssi() -> tuple[int, int]:
+FALLBACK_RSSI = (-50, -92)
+
+
+def get_rssi() -> tuple[int, int] | None:
+    """Returns (rssi, noise) in dBm, or None if it can't be read."""
     try:
-        out = subprocess.check_output(["system_profiler", "SPAirPortDataType"], text=True, timeout=5)
+        # system_profiler can take 5-10s on recent macOS
+        out = subprocess.check_output(["system_profiler", "SPAirPortDataType"], text=True, timeout=20)
         m = re.search(r"Signal / Noise:\s*(-?\d+)\s*dBm\s*/\s*(-?\d+)\s*dBm", out)
         if m:
             return int(m.group(1)), int(m.group(2))
     except Exception:
         pass
-    return -50, -92
+    return None
 
 
 def build_frame(seq: int, rssi: int, noise: int, t: float, start: float) -> bytes:
@@ -103,22 +114,29 @@ def main() -> None:
     p.add_argument("--rssi-interval", type=float, default=2.0, help="RSSI poll interval seconds")
     args = p.parse_args()
 
-    rssi, noise = get_rssi()
-    print(f"[bridge] live RSSI={rssi} dBm noise={noise} dBm → {args.host}:{args.port} @ {1/args.interval:.0f} Hz")
+    print(f"[bridge] → {args.host}:{args.port} @ {1/args.interval:.0f} Hz (reading RSSI in background…)", flush=True)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     seq = 0
     start = time.time()
-    last_poll = 0
-    cached_rssi, cached_noise = rssi, noise
+    latest = {"rssi": FALLBACK_RSSI[0], "noise": FALLBACK_RSSI[1]}
+
+    # Poll RSSI off the send loop so frames stay at the target rate
+    def poll_rssi() -> None:
+        while True:
+            reading = get_rssi()
+            if reading:
+                latest["rssi"], latest["noise"] = reading
+                print(f"[{int(time.time()-start):3}s] RSSI={latest['rssi']} dBm noise={latest['noise']} dBm seq={seq}", flush=True)
+            else:
+                print(f"[{int(time.time()-start):3}s] RSSI read failed, sending last value {latest['rssi']} dBm", flush=True)
+            time.sleep(args.rssi_interval)
+
+    threading.Thread(target=poll_rssi, daemon=True).start()
 
     try:
         while True:
             now = time.time()
-            if now - last_poll >= args.rssi_interval:
-                cached_rssi, cached_noise = get_rssi()
-                last_poll = now
-                print(f"[{int(now-start):3}s] RSSI={cached_rssi} dBm noise={cached_noise} dBm seq={seq}", flush=True)
-            frame = build_frame(seq, cached_rssi, cached_noise, now, start)
+            frame = build_frame(seq, latest["rssi"], latest["noise"], now, start)
             sock.sendto(frame, (args.host, args.port))
             seq += 1
             time.sleep(args.interval)
