@@ -119,7 +119,7 @@ describe('ruview-presence', () => {
     expect(global.fetch).toHaveBeenCalled()
     const call = (global.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
     const opts = call[1] as RequestInit
-    expect((opts.headers as Record<string, string>).Authorization).toBe('Bearer secret123')
+    expect((opts.headers as Record<string, string>).Authorization).toBe('Bearer test-value')
   })
 
   it('unreachable keeps state (does not transition to away)', async () => {
