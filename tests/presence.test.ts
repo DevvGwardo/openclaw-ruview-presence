@@ -108,7 +108,7 @@ describe('ruview-presence', () => {
     // Instead verify headers logic via manual call
     const { default: plugin } = await import('../index.js')
     const mockApi: any = {
-      pluginConfig: { ruviewUrl: 'http://localhost:3001', apiKey: 'secret123', pollIntervalMs: 10000 },
+      pluginConfig: { ruviewUrl: 'http://localhost:3001', apiKey: 'test-value', pollIntervalMs: 10000 },
       logger: { info: vi.fn(), warn: vi.fn() },
       on: vi.fn((event: string, cb: () => Promise<void>) => { /* store cb */ }),
       registerGatewayMethod: vi.fn(),
